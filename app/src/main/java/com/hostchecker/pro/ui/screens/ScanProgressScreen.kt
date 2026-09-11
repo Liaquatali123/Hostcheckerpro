@@ -421,7 +421,7 @@ fun ScanProgressScreen(
                             }
                         },
                         onLongClick = {
-                            viewModel.toggleSelection(result.id)
+                            onOpenResultDetail(result.id)
                         }
                     )
                 }

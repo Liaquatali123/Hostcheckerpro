@@ -181,13 +181,19 @@ fun ResultDetailScreen(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
+                        val rawAsn = item.asn.ifBlank { "" }
+                        val asnDisplay = if (rawAsn.isBlank() || rawAsn.equals("UNKNOWN", ignoreCase = true) || rawAsn.equals("no-asn", ignoreCase = true)) "—" else rawAsn
+                        val orgDisplay = if (item.org.isNotBlank() && !item.org.equals("Unknown", ignoreCase = true)) " (${item.org})" else ""
+                        val asnOrgValue = if (asnDisplay == "—" && orgDisplay.isEmpty()) "—" else "$asnDisplay$orgDisplay"
+                        val faviconDisplay = if (item.faviconHash.isBlank() || item.faviconHash == "-1" || item.faviconHash == "0") "—" else item.faviconHash
+
                         DetailRow(label = "Status", value = if (item.failed) "Failed (${item.errorMessage})" else "${item.code} OK")
                         DetailRow(label = "Response Time", value = "${item.ms} ms")
-                        DetailRow(label = "IP Address", value = item.ip.ifBlank { "Unresolved" })
-                        DetailRow(label = "ASN / Org", value = "${item.asn.ifBlank { "N/A" }} - ${item.org.ifBlank { "N/A" }}")
-                        DetailRow(label = "Server", value = item.server.ifBlank { "Not reported" })
-                        DetailRow(label = "Page Title", value = item.title.ifBlank { "None" })
-                        DetailRow(label = "Favicon MMH3", value = item.faviconHash.ifBlank { "None" })
+                        DetailRow(label = "IP Address", value = item.ip.ifBlank { "—" })
+                        DetailRow(label = "ASN / Org", value = asnOrgValue)
+                        DetailRow(label = "Server", value = item.server.ifBlank { "—" })
+                        DetailRow(label = "Page Title", value = item.title.ifBlank { "—" })
+                        DetailRow(label = "Favicon MMH3", value = faviconDisplay)
                     }
                 }
 
@@ -399,20 +405,23 @@ private fun DetailRow(label: String, value: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 5.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
+            color = TextSecondary,
+            modifier = Modifier.padding(end = 12.dp)
         )
         Text(
             text = value,
             fontFamily = FontFamily.Monospace,
             color = TextPrimary,
-            fontSize = 13.sp
+            fontSize = 13.sp,
+            softWrap = true,
+            modifier = Modifier.weight(1f, fill = false)
         )
     }
 }

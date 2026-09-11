@@ -49,7 +49,7 @@ class AsnLookup(
             info = fetchFromIpApiCo(ip)
         }
 
-        val result = info ?: AsnInfo(ip = ip, asn = "UNKNOWN", org = "Unknown")
+        val result = info ?: AsnInfo(ip = ip, asn = "", org = "")
         if (result.asn.isNotBlank() || result.org.isNotBlank()) {
             resultRepository.cacheAsn(result)
         }

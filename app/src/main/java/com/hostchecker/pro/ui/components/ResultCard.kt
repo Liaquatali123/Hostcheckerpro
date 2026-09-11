@@ -3,6 +3,7 @@ package com.hostchecker.pro.ui.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -122,8 +124,9 @@ fun ResultCard(
                         color = AccentCyan,
                         fontSize = 15.sp,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .horizontalScroll(rememberScrollState())
                     )
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -146,22 +149,24 @@ fun ResultCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Sub-line 1: Server • IP • ASN
-                val serverText = if (result.server.isNotBlank()) result.server else "unknown"
-                val ipText = if (result.ip.isNotBlank()) result.ip else "no-ip"
-                val asnText = if (result.asn.isNotBlank()) result.asn else (if (result.org.isNotBlank()) result.org else "no-asn")
+                // Sub-line 1: Server • IP • ASN (maxLines = 2, no truncation)
+                val serverText = if (result.server.isNotBlank()) result.server else "—"
+                val ipText = if (result.ip.isNotBlank()) result.ip else "—"
+                val rawAsn = if (result.asn.isNotBlank()) result.asn else result.org
+                val asnText = if (rawAsn.isBlank() || rawAsn.equals("UNKNOWN", ignoreCase = true) || rawAsn.equals("no-asn", ignoreCase = true)) "—" else rawAsn
 
                 Text(
                     text = "Server: $serverText  •  IP: $ipText  •  ASN: $asnText",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = true
                 )
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Sub-line 2: Code • Response Time • Title
+                // Sub-line 2: Code • Response Time • Title (maxLines = 2, no truncation)
                 val codeText = if (result.failed) "Failed" else "Code: ${result.code}"
                 val msText = if (result.ms > 0) "${result.ms}ms" else ""
                 val titleText = if (result.title.isNotBlank()) "Title: ${result.title}" else if (result.failed && result.errorMessage.isNotBlank()) "Err: ${result.errorMessage}" else ""
@@ -171,20 +176,23 @@ fun ResultCard(
                     text = line2Parts.joinToString("  •  "),
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = true
                 )
 
-                // Sub-line 3: Favicon hash & Cloudflare Origin Leak alert
-                if (result.faviconHash.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Favicon Hash: ${result.faviconHash}",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = TextSecondary.copy(alpha = 0.8f)
-                    )
-                }
+                // Sub-line 3: Favicon hash - ALWAYS rendered, even if missing ("—")
+                val hashDisplay = if (result.faviconHash.isBlank() || result.faviconHash == "-1" || result.faviconHash == "0") "—" else result.faviconHash
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Favicon Hash: $hashDisplay",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = TextSecondary.copy(alpha = 0.85f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = true
+                )
 
                 if (result.cloudflareFronted && result.cloudflareOrigin.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))

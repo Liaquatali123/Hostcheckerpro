@@ -5,8 +5,12 @@ import com.hostchecker.pro.data.repo.SessionRepository
 import com.hostchecker.pro.domain.model.ScanConfig
 import com.hostchecker.pro.domain.model.ScanResult
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.UnknownHostException
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,6 +23,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -27,6 +34,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,6 +53,18 @@ class HostScanner(
     private var activeJob: Job? = null
     private val isPaused = AtomicBoolean(false)
     private val isScanning = AtomicBoolean(false)
+
+    private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
+
+    private val customDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val cached = dnsCache[hostname]
+            if (cached != null && cached.isNotEmpty()) {
+                return cached
+            }
+            return Dns.SYSTEM.lookup(hostname)
+        }
+    }
 
     private val _resultStream = MutableSharedFlow<ScanResult>(replay = 100, extraBufferCapacity = 1000)
     val resultStream: SharedFlow<ScanResult> = _resultStream.asSharedFlow()
@@ -84,7 +104,10 @@ class HostScanner(
     )
 
     private val titleRegex = Regex("<title[^>]*>([^<]+)</title>", RegexOption.IGNORE_CASE)
-    private val faviconRegex = Regex("""<link[^>]+rel=["']?(?:shortcut\s+)?icon["']?[^>]*href=["']?([^"'>\s]+)""", RegexOption.IGNORE_CASE)
+    private val faviconRegex = Regex(
+        """<link\s+[^>]*rel=["'](?:shortcut\s+)?icon["'][^>]*href=["']([^"'>\s]+)["']|<link\s+[^>]*href=["']([^"'>\s]+)["'][^>]*rel=["'](?:shortcut\s+)?icon["']""",
+        RegexOption.IGNORE_CASE
+    )
 
     fun isScanningNow(): Boolean = isScanning.get()
     fun isPausedNow(): Boolean = isPaused.get()
@@ -124,11 +147,13 @@ class HostScanner(
             }
 
             val client = baseOkHttpClient.newBuilder()
-                .connectTimeout(config.timeoutSeconds.toLong(), TimeUnit.SECONDS)
-                .readTimeout(config.timeoutSeconds.toLong(), TimeUnit.SECONDS)
-                .writeTimeout(config.timeoutSeconds.toLong(), TimeUnit.SECONDS)
+                .dns(customDns)
+                .connectTimeout(6, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .callTimeout(12, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .retryOnConnectionFailure(true)
                 .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
                 .hostnameVerifier { _, _ -> true }
                 .build()
@@ -249,117 +274,196 @@ class HostScanner(
             .split("/").first()
             .split(":").first()
 
-        var resolvedIp = ""
-        try {
-            resolvedIp = InetAddress.getByName(cleanHost).hostAddress ?: ""
-        } catch (e: Exception) {
-            // DNS resolution failed
+        if (cleanHost.isBlank()) {
+            return ScanResult(
+                sessionId = sessionId,
+                host = rawHost,
+                failed = true,
+                errorMessage = "Invalid host format"
+            )
         }
 
-        // Try HTTPS first, then fallback HTTP
-        var result: ScanResult? = null
-        val schemes = listOf("https", "http")
-
-        for (scheme in schemes) {
-            val url = "$scheme://$cleanHost"
-            val scanAttempt = executeHttpProbe(
+        // a) DNS RESOLVE — InetAddress.getAllByName(host). If this throws UnknownHostException, mark failed (host does not exist).
+        val resolvedAddresses = try {
+            InetAddress.getAllByName(cleanHost)
+        } catch (e: UnknownHostException) {
+            return ScanResult(
                 sessionId = sessionId,
                 host = cleanHost,
-                url = url,
-                ip = resolvedIp,
-                client = client,
-                config = config
+                ip = "",
+                failed = true,
+                errorMessage = "DNS resolution failed (host does not exist)"
             )
-
-            if (!scanAttempt.failed) {
-                result = scanAttempt
-                break
-            } else if (result == null) {
-                result = scanAttempt // Keep first failure error
-            }
-        }
-
-        val finalResult = result ?: ScanResult(
-            sessionId = sessionId,
-            host = cleanHost,
-            ip = resolvedIp,
-            failed = true,
-            errorMessage = "Connection refused or unreachable"
-        )
-
-        // If alive, enrich with ASN, SAN, and CF origin leak probe
-        if (!finalResult.failed) {
-            var asn = ""
-            var org = ""
-            if (finalResult.ip.isNotBlank()) {
-                val asnInfo = asnLookup.lookupAsn(finalResult.ip)
-                asn = asnInfo.asn
-                org = asnInfo.org
-            }
-
-            val sans = CertParser.extractSans(cleanHost)
-
-            var isCf = finalResult.server.contains("cloudflare", ignoreCase = true)
-            var cfOrigin = ""
-            if (isCf) {
-                val cfProbe = cloudflareProbe.probeOrigin(cleanHost)
-                isCf = cfProbe.isFronted
-                cfOrigin = cfProbe.originInfo
-            }
-
-            return finalResult.copy(
-                asn = asn,
-                org = org,
-                san = sans,
-                cloudflareFronted = isCf,
-                cloudflareOrigin = cfOrigin
+        } catch (e: Exception) {
+            return ScanResult(
+                sessionId = sessionId,
+                host = cleanHost,
+                ip = "",
+                failed = true,
+                errorMessage = "DNS error: ${e.message ?: e.javaClass.simpleName}"
             )
         }
 
-        return finalResult
-    }
+        if (resolvedAddresses.isEmpty()) {
+            return ScanResult(
+                sessionId = sessionId,
+                host = cleanHost,
+                ip = "",
+                failed = true,
+                errorMessage = "DNS returned no records"
+            )
+        }
 
-    private suspend fun executeHttpProbe(
-        sessionId: Long,
-        host: String,
-        url: String,
-        ip: String,
-        client: OkHttpClient,
-        config: ScanConfig
-    ): ScanResult = withContext(Dispatchers.IO) {
+        val ip = resolvedAddresses.firstOrNull()?.hostAddress ?: ""
+        dnsCache[cleanHost] = resolvedAddresses.toList()
+
+        // b) TCP PROBE on 80 and 443 — Socket connect with 4s timeout each, in parallel via coroutines.
+        val (port80Open, port443Open) = checkTcpPorts(if (ip.isNotBlank()) ip else cleanHost, timeoutMs = 4000)
+        if (!port80Open && !port443Open) {
+            return ScanResult(
+                sessionId = sessionId,
+                host = cleanHost,
+                ip = ip,
+                failed = true,
+                errorMessage = "TCP ports 80 & 443 closed or unreachable"
+            )
+        }
+
+        // c, d, e, f, h) Parallel HTTPS & HTTP probes, HEAD fallback, first success wins
         val userAgent = if (config.stealthMode) {
             userAgents.random()
         } else {
             "HostCheckerPro/1.0 (+https://github.com/hostchecker/pro)"
         }
 
-        val maxAttempts = if (config.retryFailed) 3 else 1
-        var lastError = ""
+        val probeResult = probeHostProtocols(
+            cleanHost = cleanHost,
+            port80Open = port80Open,
+            port443Open = port443Open,
+            client = client,
+            userAgent = userAgent
+        )
 
-        for (attempt in 1..maxAttempts) {
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", userAgent)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .build()
+        if (probeResult == null || probeResult.code !in 100..599) {
+            return ScanResult(
+                sessionId = sessionId,
+                host = cleanHost,
+                ip = ip,
+                code = probeResult?.code ?: 0,
+                failed = true,
+                errorMessage = "No response on HTTP/HTTPS"
+            )
+        }
 
-            val startTime = System.currentTimeMillis()
-            var response: Response? = null
-            try {
-                response = client.newCall(request).execute()
-                val responseTimeMs = System.currentTimeMillis() - startTime
-                val code = response.code
-                val server = response.header("Server") ?: ""
+        // Successful response! (100-599 is RESPONDED)
+        // FIX 3: ALWAYS attempt favicon fetch
+        val faviconHash = fetchFaviconHash(
+            client = client,
+            baseUrl = probeResult.url,
+            cleanHost = cleanHost,
+            iconHref = probeResult.iconHref,
+            userAgent = userAgent
+        )
 
-                val headersMap = mutableMapOf<String, String>()
-                for (name in response.headers.names()) {
-                    headersMap[name] = response.headers[name] ?: ""
-                }
+        val liveResult = ScanResult(
+            sessionId = sessionId,
+            host = cleanHost,
+            ip = ip,
+            server = probeResult.server,
+            code = probeResult.code,
+            ms = probeResult.ms,
+            title = probeResult.title,
+            faviconHash = faviconHash,
+            headers = probeResult.headers,
+            failed = false
+        )
 
-                // Peek up to 64KB body for <title> and favicon
-                var title = ""
-                var faviconHash = ""
+        // Enrich with ASN, SAN, and CF origin leak probe
+        var asn = ""
+        var org = ""
+        if (liveResult.ip.isNotBlank()) {
+            val asnInfo = asnLookup.lookupAsn(liveResult.ip)
+            asn = if (asnInfo.asn.isBlank() || asnInfo.asn.equals("UNKNOWN", ignoreCase = true) || asnInfo.asn == "no-asn") "" else asnInfo.asn
+            org = if (asnInfo.org.isBlank() || asnInfo.org.equals("Unknown", ignoreCase = true)) "" else asnInfo.org
+        }
+
+        val sans = CertParser.extractSans(cleanHost)
+
+        var isCf = liveResult.server.contains("cloudflare", ignoreCase = true)
+        var cfOrigin = ""
+        if (isCf) {
+            val cfProbe = cloudflareProbe.probeOrigin(cleanHost)
+            isCf = cfProbe.isFronted
+            cfOrigin = cfProbe.originInfo
+        }
+
+        return liveResult.copy(
+            asn = asn,
+            org = org,
+            san = sans,
+            cloudflareFronted = isCf,
+            cloudflareOrigin = cfOrigin
+        )
+    }
+
+    private suspend fun checkTcpPorts(target: String, timeoutMs: Int): Pair<Boolean, Boolean> = coroutineScope {
+        val port443 = async(Dispatchers.IO) { isPortOpen(target, 443, timeoutMs) }
+        val port80 = async(Dispatchers.IO) { isPortOpen(target, 80, timeoutMs) }
+        Pair(port80.await(), port443.await())
+    }
+
+    private fun isPortOpen(target: String, port: Int, timeoutMs: Int): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(target, port), timeoutMs)
+                true
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private data class ProbeAttempt(
+        val url: String,
+        val code: Int,
+        val server: String,
+        val ms: Long,
+        val title: String,
+        val iconHref: String?,
+        val headers: Map<String, String>
+    )
+
+    private fun trySingleHttpCall(
+        url: String,
+        method: String,
+        client: OkHttpClient,
+        userAgent: String
+    ): ProbeAttempt? {
+        val request = Request.Builder()
+            .url(url)
+            .method(method, null)
+            .header("User-Agent", userAgent)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .build()
+
+        val startTime = System.currentTimeMillis()
+        var response: Response? = null
+        return try {
+            response = client.newCall(request).execute()
+            val responseTimeMs = System.currentTimeMillis() - startTime
+            val code = response.code
+            val server = response.header("Server") ?: ""
+
+            val headersMap = mutableMapOf<String, String>()
+            for (name in response.headers.names()) {
+                headersMap[name] = response.headers[name] ?: ""
+            }
+
+            var title = ""
+            var iconHref: String? = null
+
+            if (method == "GET") {
                 try {
                     val peekedBody = response.peekBody(65536).string()
                     val titleMatch = titleRegex.find(peekedBody)
@@ -367,77 +471,146 @@ class HostScanner(
                         title = titleMatch.groupValues[1].trim()
                     }
 
-                    // Favicon detection
                     val iconMatch = faviconRegex.find(peekedBody)
-                    val faviconUrl = if (iconMatch != null) {
-                        val rawHref = iconMatch.groupValues[1].trim()
-                        val parsed = url.toHttpUrlOrNull()?.resolve(rawHref)
-                        parsed?.toString() ?: "$url/favicon.ico"
-                    } else {
-                        "$url/favicon.ico"
+                    if (iconMatch != null) {
+                        iconHref = (iconMatch.groups[1] ?: iconMatch.groups[2])?.value?.trim()
                     }
-
-                    faviconHash = fetchFaviconHash(client, faviconUrl, userAgent)
                 } catch (e: Exception) {
-                    // Body peek error ignored
-                } finally {
-                    // Prompt mandate: Cancel body via response.close() after reading headers — never download full page
-                    response.close()
+                    // Peek body error ignored
                 }
+            }
 
-                return@withContext ScanResult(
-                    sessionId = sessionId,
-                    host = host,
-                    ip = ip,
-                    server = server,
-                    code = code,
-                    ms = responseTimeMs,
-                    title = title,
-                    faviconHash = faviconHash,
-                    headers = headersMap,
-                    failed = false
-                )
-            } catch (e: Exception) {
-                lastError = e.message ?: e.javaClass.simpleName
-                response?.close()
-                if (attempt < maxAttempts) {
-                    delay(100L * (1 shl (attempt - 1))) // exponential backoff
+            ProbeAttempt(
+                url = url,
+                code = code,
+                server = server,
+                ms = responseTimeMs,
+                title = title,
+                iconHref = iconHref,
+                headers = headersMap
+            )
+        } catch (e: Exception) {
+            null
+        } finally {
+            response?.close()
+        }
+    }
+
+    private fun executeProtocolProbe(
+        url: String,
+        client: OkHttpClient,
+        userAgent: String
+    ): ProbeAttempt? {
+        var attempt = trySingleHttpCall(url, "GET", client, userAgent)
+        if (attempt == null) {
+            // e) HEAD FALLBACK — if GET returns no response or times out, try HEAD request
+            attempt = trySingleHttpCall(url, "HEAD", client, userAgent)
+        }
+        return attempt
+    }
+
+    private suspend fun probeHostProtocols(
+        cleanHost: String,
+        port80Open: Boolean,
+        port443Open: Boolean,
+        client: OkHttpClient,
+        userAgent: String
+    ): ProbeAttempt? = coroutineScope {
+        val channel = Channel<ProbeAttempt?>(Channel.BUFFERED)
+        val jobs = mutableListOf<Job>()
+        var probeCount = 0
+
+        val launchHttps = port443Open || !port80Open
+        val launchHttp = port80Open || !port443Open
+
+        if (launchHttps) {
+            probeCount++
+            jobs += launch(Dispatchers.IO) {
+                val res = executeProtocolProbe("https://$cleanHost", client, userAgent)
+                channel.send(res)
+            }
+        }
+
+        if (launchHttp) {
+            probeCount++
+            jobs += launch(Dispatchers.IO) {
+                val res = executeProtocolProbe("http://$cleanHost", client, userAgent)
+                channel.send(res)
+            }
+        }
+
+        var bestAttempt: ProbeAttempt? = null
+        var fallbackAttempt: ProbeAttempt? = null
+
+        for (i in 0 until probeCount) {
+            val attempt = channel.receive()
+            if (attempt != null && attempt.code in 100..599) {
+                bestAttempt = attempt
+                jobs.forEach { it.cancel() }
+                break
+            } else if (attempt != null && fallbackAttempt == null) {
+                fallbackAttempt = attempt
+            }
+        }
+
+        if (bestAttempt == null) {
+            if (!launchHttps) {
+                val fallbackHttps = executeProtocolProbe("https://$cleanHost", client, userAgent)
+                if (fallbackHttps != null && fallbackHttps.code in 100..599) {
+                    bestAttempt = fallbackHttps
+                }
+            } else if (!launchHttp) {
+                val fallbackHttp = executeProtocolProbe("http://$cleanHost", client, userAgent)
+                if (fallbackHttp != null && fallbackHttp.code in 100..599) {
+                    bestAttempt = fallbackHttp
                 }
             }
         }
 
-        ScanResult(
-            sessionId = sessionId,
-            host = host,
-            ip = ip,
-            code = 0,
-            failed = true,
-            errorMessage = lastError
-        )
+        bestAttempt ?: fallbackAttempt
     }
 
-    private fun fetchFaviconHash(client: OkHttpClient, iconUrl: String, userAgent: String): String {
-        return try {
+    private fun fetchFaviconHash(
+        client: OkHttpClient,
+        baseUrl: String,
+        cleanHost: String,
+        iconHref: String?,
+        userAgent: String
+    ): String {
+        val faviconUrl = if (!iconHref.isNullOrBlank()) {
+            baseUrl.toHttpUrlOrNull()?.resolve(iconHref)?.toString()
+                ?: "${baseUrl.trimEnd('/')}/favicon.ico"
+        } else {
+            val protocol = if (baseUrl.startsWith("https")) "https" else "http"
+            "$protocol://$cleanHost/favicon.ico"
+        }
+
+        try {
             val req = Request.Builder()
-                .url(iconUrl)
+                .url(faviconUrl)
                 .header("User-Agent", userAgent)
+                .header("Accept", "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
                 .build()
+
             client.newCall(req).execute().use { res ->
-                if (res.isSuccessful) {
+                if (res.code in 200..299) {
                     val stream = res.body?.byteStream()
                     if (stream != null) {
-                        val bytes = readBytesUpTo(stream, 65536)
+                        val bytes = readBytesUpTo(stream, 524288) // max 512KB
                         if (bytes.isNotEmpty()) {
-                            val hash = FaviconHasher.hash(bytes, seed = 0)
+                            val hash = MMH3.hash(bytes, 0)
                             return hash.toString()
                         }
                     }
                 }
-                ""
             }
         } catch (e: Exception) {
-            ""
+            // Fetch failed
         }
+
+        // If icon fetch fails, hash the string "NONE" and store -1 to indicate attempted-but-missing. Display "—".
+        MMH3.hash("NONE".toByteArray(Charsets.UTF_8), 0)
+        return "-1"
     }
 
     private fun readBytesUpTo(stream: java.io.InputStream, maxBytes: Int): ByteArray {
