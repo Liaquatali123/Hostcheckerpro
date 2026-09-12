@@ -47,7 +47,9 @@ data class ScanUiState(
     val sortField: SortField = SortField.TIME,
     val sortAscending: Boolean = false,
     val selectedIds: Set<Long> = emptySet(),
-    val isSelectionMode: Boolean = false
+    val isSelectionMode: Boolean = false,
+    val outName: String = "",
+    val autoSavePath: String = ""
 )
 
 class ScanViewModel(
@@ -182,11 +184,14 @@ class ScanViewModel(
         currentSessionId = sessionId
         allHostsForSession = hosts
 
+        val folderName = if (config.outName.isNotBlank()) config.outName else "scan_$sessionId"
         _uiState.value = _uiState.value.copy(
             isScanning = true,
             isPaused = false,
             total = hosts.size,
-            scanned = startIndex
+            scanned = startIndex,
+            outName = folderName,
+            autoSavePath = "HostCheckerPro/$folderName"
         )
 
         startTimer()

@@ -8,12 +8,21 @@ import java.io.InputStreamReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+data class HostImportResult(
+    val fileName: String,
+    val validHosts: List<String>,
+    val duplicateCount: Int,
+    val invalidCount: Int
+)
+
 object FileUtil {
 
-    suspend fun readHostsFromUri(context: Context, uri: Uri): Pair<String, List<String>> =
+    suspend fun readHostsFromUri(context: Context, uri: Uri): HostImportResult =
         withContext(Dispatchers.IO) {
             val fileName = getFileName(context, uri) ?: "hostlist.txt"
-            val hosts = mutableListOf<String>()
+            val seen = LinkedHashSet<String>()
+            var duplicates = 0
+            var invalid = 0
 
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
                 BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
@@ -21,10 +30,15 @@ object FileUtil {
                     while (line != null) {
                         val trimmed = line.trim()
                         if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                            // Extract host if line contains comma or space (e.g. CSV or space-separated)
-                            val host = trimmed.split(",", " ", "\t").first().trim()
-                            if (host.isNotEmpty()) {
-                                hosts.add(host)
+                            // Extract host candidate from comma, space, or tab separated lines (e.g. CSV or list)
+                            val rawCandidate = trimmed.split(",", " ", "\t").first().trim()
+                            val cleaned = NetworkUtil.cleanHostInput(rawCandidate)
+                            if (NetworkUtil.isValidHost(cleaned)) {
+                                if (!seen.add(cleaned)) {
+                                    duplicates++
+                                }
+                            } else {
+                                invalid++
                             }
                         }
                         line = reader.readLine()
@@ -32,21 +46,40 @@ object FileUtil {
                 }
             }
 
-            Pair(fileName, hosts)
+            HostImportResult(
+                fileName = fileName,
+                validHosts = seen.toList(),
+                duplicateCount = duplicates,
+                invalidCount = invalid
+            )
         }
 
-    fun parseHostsFromText(rawText: String): List<String> {
-        val hosts = mutableListOf<String>()
+    fun parseHostsFromText(rawText: String, defaultName: String = "Pasted List"): HostImportResult {
+        val seen = LinkedHashSet<String>()
+        var duplicates = 0
+        var invalid = 0
+
         rawText.lineSequence().forEach { line ->
             val trimmed = line.trim()
             if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                val host = trimmed.split(",", " ", "\t").first().trim()
-                if (host.isNotEmpty()) {
-                    hosts.add(host)
+                val rawCandidate = trimmed.split(",", " ", "\t").first().trim()
+                val cleaned = NetworkUtil.cleanHostInput(rawCandidate)
+                if (NetworkUtil.isValidHost(cleaned)) {
+                    if (!seen.add(cleaned)) {
+                        duplicates++
+                    }
+                } else {
+                    invalid++
                 }
             }
         }
-        return hosts
+
+        return HostImportResult(
+            fileName = defaultName,
+            validHosts = seen.toList(),
+            duplicateCount = duplicates,
+            invalidCount = invalid
+        )
     }
 
     fun getFileName(context: Context, uri: Uri): String? {

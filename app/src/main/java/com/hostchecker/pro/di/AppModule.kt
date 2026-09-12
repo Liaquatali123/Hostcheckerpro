@@ -74,7 +74,8 @@ class AppModule(private val context: Context) {
             resultRepository = resultRepository,
             sessionRepository = sessionRepository,
             asnLookup = asnLookup,
-            cloudflareProbe = cloudflareProbe
+            cloudflareProbe = cloudflareProbe,
+            context = context
         )
     }
 }

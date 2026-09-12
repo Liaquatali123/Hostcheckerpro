@@ -3,6 +3,7 @@ package com.hostchecker.pro.ui.screens
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -70,6 +71,7 @@ import com.hostchecker.pro.ui.theme.Surface
 import com.hostchecker.pro.ui.theme.SurfaceVariant
 import com.hostchecker.pro.ui.theme.TextPrimary
 import com.hostchecker.pro.ui.theme.TextSecondary
+import com.hostchecker.pro.util.AutoSaveManager
 import com.hostchecker.pro.util.FileUtil
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -90,9 +92,12 @@ fun ScanSetupScreen(
 
     var fileName by remember { mutableStateOf("Manual Input") }
     var loadedHosts by remember { mutableStateOf<List<String>>(emptyList()) }
+    var duplicateCount by remember { mutableStateOf(0) }
+    var invalidCount by remember { mutableStateOf(0) }
     var isLoadingFile by remember { mutableStateOf(true) }
 
     var sessionName by remember { mutableStateOf("") }
+    var outNameText by remember { mutableStateOf("") }
     var threadsText by remember { mutableStateOf("6") }
     var timeoutText by remember { mutableStateOf("10") }
     var filterText by remember { mutableStateOf("") }
@@ -112,17 +117,24 @@ fun ScanSetupScreen(
         if (!fileUriString.isNullOrBlank()) {
             try {
                 val uri = Uri.parse(fileUriString)
-                val (name, hosts) = FileUtil.readHostsFromUri(context, uri)
-                fileName = name
-                loadedHosts = hosts
-                sessionName = "Scan: $name"
+                val result = FileUtil.readHostsFromUri(context, uri)
+                fileName = result.fileName
+                loadedHosts = result.validHosts
+                duplicateCount = result.duplicateCount
+                invalidCount = result.invalidCount
+                sessionName = "Scan: ${result.fileName}"
+                outNameText = AutoSaveManager.sanitizeFolderName(result.fileName.substringBeforeLast("."))
             } catch (e: Exception) {
                 fileName = "Error loading file"
             }
         } else if (!rawPastedText.isNullOrBlank()) {
+            val result = FileUtil.parseHostsFromText(rawPastedText)
             fileName = "Pasted List"
-            loadedHosts = FileUtil.parseHostsFromText(rawPastedText)
+            loadedHosts = result.validHosts
+            duplicateCount = result.duplicateCount
+            invalidCount = result.invalidCount
             sessionName = "Pasted Scan (${loadedHosts.size} hosts)"
+            outNameText = "pasted_scan"
         }
         isLoadingFile = false
     }
@@ -176,35 +188,65 @@ fun ScanSetupScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp)
             ) {
-                // File summary card
+                // File summary card displaying filename, valid hosts, duplicates removed, and invalid entries
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Description,
-                            contentDescription = null,
-                            tint = AccentCyan,
-                            modifier = Modifier.size(36.dp)
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = null,
+                                tint = AccentCyan,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = fileName,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary,
+                                    fontSize = 16.sp,
+                                    modifier = Modifier.testTag("loaded_filename_text")
+                                )
+                                Text(
+                                    text = "${loadedHosts.size} valid hosts ready",
+                                    color = Primary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.testTag("valid_hosts_count_text")
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(Divider.copy(alpha = 0.5f))
                         )
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column {
-                            Text(
-                                text = fileName,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary,
-                                fontSize = 16.sp
-                            )
-                            Text(
-                                text = "${loadedHosts.size} hosts ready to scan",
-                                color = TextSecondary,
-                                fontSize = 13.sp
-                            )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Stats metrics
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("Valid", color = TextSecondary, fontSize = 11.sp)
+                                Text("${loadedHosts.size}", color = Primary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            }
+                            Column {
+                                Text("Duplicates Removed", color = TextSecondary, fontSize = 11.sp)
+                                Text("$duplicateCount", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            }
+                            Column {
+                                Text("Invalid Skipped", color = TextSecondary, fontSize = 11.sp)
+                                Text("$invalidCount", color = if (invalidCount > 0) com.hostchecker.pro.ui.theme.Warning else TextSecondary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            }
                         }
                     }
                 }
@@ -220,6 +262,33 @@ fun ScanSetupScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("session_name_input"),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Primary,
+                        unfocusedBorderColor = Divider,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Output Folder Name (outname)
+                OutlinedTextField(
+                    value = outNameText,
+                    onValueChange = { outNameText = it },
+                    label = { Text("Output Folder Name (outname)") },
+                    placeholder = { Text("e.g. live_targets") },
+                    supportingText = {
+                        Text(
+                            text = "Auto-saves live hosts in: HostCheckerPro/${AutoSaveManager.sanitizeFolderName(outNameText).ifBlank { "scan" }}/",
+                            color = AccentCyan,
+                            fontSize = 12.sp
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("outname_input"),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = Primary,
                         unfocusedBorderColor = Divider,
@@ -381,13 +450,18 @@ fun ScanSetupScreen(
                             targetHosts = targetHosts.filter { it.contains(filterText.trim(), ignoreCase = true) }
                         }
 
+                        val resolvedOutName = outNameText.trim().ifBlank {
+                            sessionName.trim().ifBlank { fileName.substringBeforeLast(".") }.ifBlank { "scan" }
+                        }
+
                         val config = ScanConfig(
                             threads = threads,
                             timeoutSeconds = timeout,
                             filterText = filterText,
                             retryFailed = retryFailed,
                             stealthMode = stealthMode,
-                            jitterEnabled = jitterEnabled
+                            jitterEnabled = jitterEnabled,
+                            outName = resolvedOutName
                         )
 
                         scope.launch {

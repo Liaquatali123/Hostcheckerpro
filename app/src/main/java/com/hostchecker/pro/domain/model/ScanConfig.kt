@@ -8,5 +8,6 @@ data class ScanConfig(
     val retryFailed: Boolean = false,
     val stealthMode: Boolean = false,
     val jitterEnabled: Boolean = false,
-    val showFailed: Boolean = true
+    val showFailed: Boolean = true,
+    val outName: String = ""
 )

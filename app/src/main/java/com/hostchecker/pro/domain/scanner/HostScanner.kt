@@ -1,9 +1,11 @@
 package com.hostchecker.pro.domain.scanner
 
+import android.content.Context
 import com.hostchecker.pro.data.repo.ResultRepository
 import com.hostchecker.pro.data.repo.SessionRepository
 import com.hostchecker.pro.domain.model.ScanConfig
 import com.hostchecker.pro.domain.model.ScanResult
+import com.hostchecker.pro.util.AutoSaveManager
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -45,7 +47,8 @@ class HostScanner(
     private val resultRepository: ResultRepository,
     private val sessionRepository: SessionRepository,
     private val asnLookup: AsnLookup,
-    private val cloudflareProbe: CloudflareProbe
+    private val cloudflareProbe: CloudflareProbe,
+    private val context: Context? = null
 ) {
     private val scannerJob = SupervisorJob()
     private val scannerScope = CoroutineScope(Dispatchers.IO + scannerJob)
@@ -133,6 +136,10 @@ class HostScanner(
             val consecutiveFails = AtomicInteger(0)
             val startTime = System.currentTimeMillis()
 
+            // Initialize auto-save in main storage HostCheckerPro/<outname>/
+            val outFolderName = if (config.outName.isNotBlank()) config.outName else "scan_$sessionId"
+            AutoSaveManager.initSession(context, sessionId, outFolderName)
+
             // Pre-count responded from previous runs if resuming
             val existingResponded = resultRepository.getLiveResultsOnce(sessionId).size
             respondedCount.set(existingResponded)
@@ -193,6 +200,8 @@ class HostScanner(
                         if (!scanResult.failed) {
                             respondedCount.incrementAndGet()
                             consecutiveFails.set(0)
+                            // Auto-save live host in real-time to HostCheckerPro/<outname>/
+                            AutoSaveManager.saveLiveHost(context, sessionId, scanResult)
                         } else {
                             val fails = consecutiveFails.incrementAndGet()
                             if (fails == 10) {
@@ -257,6 +266,7 @@ class HostScanner(
                     _scanEvents.emit(ScanEvent.Stopped)
                 }
             } finally {
+                AutoSaveManager.closeSession(context, sessionId)
                 isScanning.set(false)
             }
         }
