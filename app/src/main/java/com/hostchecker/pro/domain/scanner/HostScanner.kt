@@ -55,9 +55,9 @@ class HostScanner(
     private val scannerJob = SupervisorJob()
     private val scannerScope = CoroutineScope(Dispatchers.IO + scannerJob)
 
-    private var activeJob: Job? = null
-    private val isPaused = AtomicBoolean(false)
-    private val isScanning = AtomicBoolean(false)
+    private val activeJobs = ConcurrentHashMap<Long, Job>()
+    private val scanningSessions = ConcurrentHashMap<Long, Boolean>()
+    private val pausedSessions = ConcurrentHashMap<Long, Boolean>()
 
     private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
 
@@ -96,7 +96,10 @@ class HostScanner(
     val scanEvents: SharedFlow<ScanEvent> = _scanEvents.asSharedFlow()
 
     sealed interface ScanEvent {
+        val sessionId: Long
+
         data class Progress(
+            override val sessionId: Long,
             val scanned: Int,
             val responded: Int,
             val total: Int,
@@ -104,11 +107,21 @@ class HostScanner(
             val hostsPerSecond: Double
         ) : ScanEvent
 
-        data class Complete(val scanned: Int, val responded: Int, val total: Int) : ScanEvent
-        data class NetworkWarning(val consecutiveFails: Int) : ScanEvent
-        data object Paused : ScanEvent
-        data object Resumed : ScanEvent
-        data object Stopped : ScanEvent
+        data class Complete(
+            override val sessionId: Long,
+            val scanned: Int,
+            val responded: Int,
+            val total: Int
+        ) : ScanEvent
+
+        data class NetworkWarning(
+            override val sessionId: Long,
+            val consecutiveFails: Int
+        ) : ScanEvent
+
+        data class Paused(override val sessionId: Long) : ScanEvent
+        data class Resumed(override val sessionId: Long) : ScanEvent
+        data class Stopped(override val sessionId: Long) : ScanEvent
     }
 
     private val userAgents = listOf(
@@ -132,8 +145,11 @@ class HostScanner(
         RegexOption.IGNORE_CASE
     )
 
-    fun isScanningNow(): Boolean = isScanning.get()
-    fun isPausedNow(): Boolean = isPaused.get()
+    fun isScanningNow(): Boolean = scanningSessions.values.any { it }
+    fun isPausedNow(): Boolean = pausedSessions.values.any { it }
+
+    fun isScanningNow(sessionId: Long): Boolean = scanningSessions[sessionId] == true
+    fun isPausedNow(sessionId: Long): Boolean = pausedSessions[sessionId] == true
 
     /**
      * Starts or resumes a scan session across a list of hosts.
@@ -145,11 +161,11 @@ class HostScanner(
         config: ScanConfig,
         startIndex: Int = 0
     ) {
-        stopScan()
-        isScanning.set(true)
-        isPaused.set(false)
+        stopScan(sessionId)
+        scanningSessions[sessionId] = true
+        pausedSessions[sessionId] = false
 
-        activeJob = scannerScope.launch {
+        val job = scannerScope.launch {
             // Deduplicate input hosts while preserving order
             val normalizedHostList = mutableListOf<String>()
             val seenInInput = HashSet<String>()
@@ -205,7 +221,7 @@ class HostScanner(
             val workers = (0 until config.threads.coerceIn(1, 64)).map {
                 launch {
                     while (isActive) {
-                        while (isPaused.get() && isActive) {
+                        while (pausedSessions[sessionId] == true && isActive) {
                             delay(200)
                         }
 
@@ -242,7 +258,7 @@ class HostScanner(
                         } else {
                             val fails = consecutiveFails.incrementAndGet()
                             if (fails == 10) {
-                                _scanEvents.emit(ScanEvent.NetworkWarning(fails))
+                                _scanEvents.emit(ScanEvent.NetworkWarning(sessionId, fails))
                             }
                         }
 
@@ -262,6 +278,7 @@ class HostScanner(
                         val rate = if (elapsedSeconds > 0) (currentScanned - startIndex) / elapsedSeconds else 0.0
                         _scanEvents.emit(
                             ScanEvent.Progress(
+                                sessionId = sessionId,
                                 scanned = currentScanned,
                                 responded = respondedCount.get(),
                                 total = total,
@@ -287,26 +304,30 @@ class HostScanner(
                     status = "COMPLETED"
                 )
                 sessionRepository.finishSession(sessionId, "COMPLETED")
-                _scanEvents.emit(ScanEvent.Complete(finalScanned, finalResponded, total))
+                _scanEvents.emit(ScanEvent.Complete(sessionId, finalScanned, finalResponded, total))
             } catch (e: CancellationException) {
                 val lastIdx = currentIndex.get().coerceAtMost(total)
+                val isSesPaused = pausedSessions[sessionId] == true
                 sessionRepository.updateProgress(
                     id = sessionId,
                     scanned = scannedCount.get(),
                     responded = respondedCount.get(),
                     lastIndex = lastIdx,
-                    status = if (isPaused.get()) "PAUSED" else "STOPPED"
+                    status = if (isSesPaused) "PAUSED" else "STOPPED"
                 )
-                if (isPaused.get()) {
-                    _scanEvents.emit(ScanEvent.Paused)
+                if (isSesPaused) {
+                    _scanEvents.emit(ScanEvent.Paused(sessionId))
                 } else {
-                    _scanEvents.emit(ScanEvent.Stopped)
+                    _scanEvents.emit(ScanEvent.Stopped(sessionId))
                 }
             } finally {
                 AutoSaveManager.closeSession(context, sessionId)
-                isScanning.set(false)
+                scanningSessions.remove(sessionId)
+                pausedSessions.remove(sessionId)
+                activeJobs.remove(sessionId)
             }
         }
+        activeJobs[sessionId] = job
     }
 
     /**
@@ -791,22 +812,33 @@ class HostScanner(
         return scanResult
     }
 
-    fun pauseScan() {
-        if (isScanning.get()) {
-            isPaused.set(true)
+    fun pauseScan(sessionId: Long) {
+        if (scanningSessions[sessionId] == true) {
+            pausedSessions[sessionId] = true
         }
+    }
+
+    fun resumeScan(sessionId: Long) {
+        if (scanningSessions[sessionId] == true) {
+            pausedSessions[sessionId] = false
+        }
+    }
+
+    fun stopScan(sessionId: Long) {
+        pausedSessions[sessionId] = false
+        scanningSessions[sessionId] = false
+        activeJobs.remove(sessionId)?.cancel()
+    }
+
+    fun pauseScan() {
+        scanningSessions.keys.forEach { pauseScan(it) }
     }
 
     fun resumeScan() {
-        if (isScanning.get()) {
-            isPaused.set(false)
-        }
+        scanningSessions.keys.forEach { resumeScan(it) }
     }
 
     fun stopScan() {
-        isPaused.set(false)
-        isScanning.set(false)
-        activeJob?.cancel()
-        activeJob = null
+        activeJobs.keys.toList().forEach { stopScan(it) }
     }
 }

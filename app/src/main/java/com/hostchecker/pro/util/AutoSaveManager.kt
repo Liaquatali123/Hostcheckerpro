@@ -634,38 +634,16 @@ object AutoSaveManager {
 
     fun deleteSessionFiles(context: Context, sessionId: Long, fileName: String) {
         try {
-            // 1. Delete backup host file
+            // ONLY delete the internal temporary hosts backup file.
+            // NEVER delete the actual exported downloads or live_hosts.txt files!
             val backupFile = File(context.filesDir, "session_hosts_$sessionId.txt")
             if (backupFile.exists()) {
                 backupFile.delete()
-                Log.d(TAG, "Deleted session hosts backup file for $sessionId")
+                Log.d(TAG, "Deleted internal session hosts backup file for $sessionId")
             }
-
-            val cleanOutName = sanitizeFolderName(fileName.substringBeforeLast("."))
-                .ifBlank { "scan_$sessionId" }
-
-            // 2. Delete private downloads folder if exists
-            val base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            if (base != null) {
-                val appExtDir = File(base, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
-                if (appExtDir.exists()) {
-                    appExtDir.deleteRecursively()
-                    Log.d(TAG, "Deleted private session downloads folder: $appExtDir")
-                }
-            }
-
-            // 3. Delete public session downloads folder if exists
-            val pubDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (pubDownloads != null) {
-                val pubSessionDir = File(pubDownloads, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
-                if (pubSessionDir.exists()) {
-                    pubSessionDir.deleteRecursively()
-                    Log.d(TAG, "Deleted public session downloads folder: $pubSessionDir")
-                }
-            }
-            Log.d(TAG, "Successfully cleaned all session files for session: $sessionId")
+            Log.d(TAG, "Successfully kept exported download files safe and cleaned internal caches.")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to delete session files: ${e.message}")
+            Log.e(TAG, "Failed to clean internal session backup file: ${e.message}")
         }
     }
 }

@@ -116,38 +116,40 @@ class ScanViewModel(
         // Observe scanner events
         viewModelScope.launch {
             hostScanner.scanEvents.conflate().collect { event ->
-                when (event) {
-                    is HostScanner.ScanEvent.Progress -> {
-                        _uiState.value = _uiState.value.copy(
-                            scanned = event.scanned,
-                            responded = event.responded,
-                            total = event.total,
-                            currentHost = event.currentHost,
-                            hostsPerSecond = event.hostsPerSecond
-                        )
-                    }
-                    is HostScanner.ScanEvent.Complete -> {
-                        _uiState.value = _uiState.value.copy(
-                            isScanning = false,
-                            isPaused = false,
-                            scanned = event.scanned,
-                            responded = event.responded
-                        )
-                        stopTimer()
-                        notificationHelper.showScanCompleteNotification(event.responded, event.total)
-                    }
-                    is HostScanner.ScanEvent.NetworkWarning -> {
-                        notificationHelper.showNetworkWarningNotification(event.consecutiveFails)
-                    }
-                    is HostScanner.ScanEvent.Paused -> {
-                        _uiState.value = _uiState.value.copy(isPaused = true)
-                    }
-                    is HostScanner.ScanEvent.Resumed -> {
-                        _uiState.value = _uiState.value.copy(isPaused = false)
-                    }
-                    is HostScanner.ScanEvent.Stopped -> {
-                        _uiState.value = _uiState.value.copy(isScanning = false, isPaused = false)
-                        stopTimer()
+                if (event.sessionId == currentSessionId) {
+                    when (event) {
+                        is HostScanner.ScanEvent.Progress -> {
+                            _uiState.value = _uiState.value.copy(
+                                scanned = event.scanned,
+                                responded = event.responded,
+                                total = event.total,
+                                currentHost = event.currentHost,
+                                hostsPerSecond = event.hostsPerSecond
+                            )
+                        }
+                        is HostScanner.ScanEvent.Complete -> {
+                            _uiState.value = _uiState.value.copy(
+                                isScanning = false,
+                                isPaused = false,
+                                scanned = event.scanned,
+                                responded = event.responded
+                            )
+                            stopTimer()
+                            notificationHelper.showScanCompleteNotification(event.responded, event.total)
+                        }
+                        is HostScanner.ScanEvent.NetworkWarning -> {
+                            notificationHelper.showNetworkWarningNotification(event.consecutiveFails)
+                        }
+                        is HostScanner.ScanEvent.Paused -> {
+                            _uiState.value = _uiState.value.copy(isPaused = true)
+                        }
+                        is HostScanner.ScanEvent.Resumed -> {
+                            _uiState.value = _uiState.value.copy(isPaused = false)
+                        }
+                        is HostScanner.ScanEvent.Stopped -> {
+                            _uiState.value = _uiState.value.copy(isScanning = false, isPaused = false)
+                            stopTimer()
+                        }
                     }
                 }
             }
@@ -198,8 +200,8 @@ class ScanViewModel(
                 scanned = session?.scanned ?: 0,
                 responded = session?.responded ?: 0,
                 total = session?.total ?: 0,
-                isScanning = hostScanner.isScanningNow(),
-                isPaused = hostScanner.isPausedNow(),
+                isScanning = hostScanner.isScanningNow(sessionId),
+                isPaused = hostScanner.isPausedNow(sessionId),
                 outName = folderName,
                 autoSavePath = AutoSaveManager.getDisplayPath(folderName)
             )
@@ -242,12 +244,12 @@ class ScanViewModel(
     }
 
     fun pauseScan() {
-        hostScanner.pauseScan()
+        hostScanner.pauseScan(currentSessionId)
         _uiState.value = _uiState.value.copy(isPaused = true)
     }
 
     fun resumeScan() {
-        hostScanner.resumeScan()
+        hostScanner.resumeScan(currentSessionId)
         _uiState.value = _uiState.value.copy(isPaused = false)
     }
 
@@ -302,7 +304,7 @@ class ScanViewModel(
     }
 
     fun stopScan() {
-        hostScanner.stopScan()
+        hostScanner.stopScan(currentSessionId)
         _uiState.value = _uiState.value.copy(isScanning = false, isPaused = false)
         stopTimer()
     }
