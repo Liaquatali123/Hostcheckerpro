@@ -196,7 +196,7 @@ fun SessionListScreen(
                     val dismissState = rememberSwipeToDismissBoxState(
                         confirmValueChange = { value ->
                             if (value == SwipeToDismissBoxValue.EndToStart) {
-                                viewModel.deleteSession(session.id)
+                                viewModel.deleteSession(context, session)
                                 true
                             } else false
                         }

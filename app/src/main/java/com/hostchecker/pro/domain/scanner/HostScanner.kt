@@ -50,7 +50,7 @@ class HostScanner(
     private val sessionRepository: SessionRepository,
     private val asnLookup: AsnLookup,
     private val cloudflareProbe: CloudflareProbe,
-    private val context: Context? = null
+    val context: Context? = null
 ) {
     private val scannerJob = SupervisorJob()
     private val scannerScope = CoroutineScope(Dispatchers.IO + scannerJob)

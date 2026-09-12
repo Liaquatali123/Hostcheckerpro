@@ -29,6 +29,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+
 enum class SortField {
     HOST, CODE, MS, SERVER, FAVICON, TIME
 }
@@ -180,6 +183,11 @@ class ScanViewModel(
 
         viewModelScope.launch {
             val session = sessionRepository.getSessionOnce(sessionId)
+            if (allHostsForSession.isEmpty() && session != null) {
+                hostScanner.context?.let { ctx ->
+                    allHostsForSession = AutoSaveManager.loadSessionHosts(ctx, sessionId)
+                }
+            }
             val folderName = if (session != null) {
                 AutoSaveManager.sanitizeFolderName(session.fileName.substringBeforeLast("."))
                     .ifBlank { "scan_$sessionId" }
@@ -209,6 +217,10 @@ class ScanViewModel(
         currentSessionId = sessionId
         allHostsForSession = hosts
 
+        hostScanner.context?.let { ctx ->
+            AutoSaveManager.saveSessionHosts(ctx, sessionId, hosts)
+        }
+
         val folderName = if (config.outName.isNotBlank()) config.outName else "scan_$sessionId"
         _uiState.value = _uiState.value.copy(
             isScanning = true,
@@ -237,6 +249,56 @@ class ScanViewModel(
     fun resumeScan() {
         hostScanner.resumeScan()
         _uiState.value = _uiState.value.copy(isPaused = false)
+    }
+
+    fun resumeStoppedScan() {
+        val session = _uiState.value.session ?: return
+        if (_uiState.value.isScanning) return
+
+        viewModelScope.launch {
+            val retrievedHosts = if (allHostsForSession.isNotEmpty()) {
+                allHostsForSession
+            } else {
+                var loaded = emptyList<String>()
+                hostScanner.context?.let { ctx ->
+                    loaded = AutoSaveManager.loadSessionHosts(ctx, session.id)
+                }
+                loaded
+            }
+
+            if (retrievedHosts.isNotEmpty()) {
+                allHostsForSession = retrievedHosts
+                
+                val settingsFlow = settingsDataStore.settingsFlow
+                var retryFailedVal = false
+                var stealthModeVal = false
+                var jitterEnabledVal = false
+                try {
+                    val settings = settingsFlow.first()
+                    retryFailedVal = settings.retryFailed
+                    stealthModeVal = settings.stealthMode
+                    jitterEnabledVal = settings.jitterEnabled
+                } catch (e: Exception) {
+                    // Fallback to defaults
+                }
+
+                val config = ScanConfig(
+                    threads = session.threads,
+                    timeoutSeconds = 10,
+                    retryFailed = retryFailedVal,
+                    stealthMode = stealthModeVal,
+                    jitterEnabled = jitterEnabledVal,
+                    outName = _uiState.value.outName
+                )
+
+                startOrResumeScan(
+                    sessionId = session.id,
+                    hosts = retrievedHosts,
+                    config = config,
+                    startIndex = session.scanned
+                )
+            }
+        }
     }
 
     fun stopScan() {

@@ -607,4 +607,65 @@ object AutoSaveManager {
         }
         return value
     }
+
+    fun saveSessionHosts(context: Context, sessionId: Long, hosts: List<String>) {
+        try {
+            val file = File(context.filesDir, "session_hosts_$sessionId.txt")
+            file.writeText(hosts.joinToString("\n"))
+            Log.d(TAG, "Saved ${hosts.size} hosts for session $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save session hosts: ${e.message}")
+        }
+    }
+
+    fun loadSessionHosts(context: Context, sessionId: Long): List<String> {
+        try {
+            val file = File(context.filesDir, "session_hosts_$sessionId.txt")
+            if (file.exists()) {
+                val list = file.readLines().map { it.trim() }.filter { it.isNotEmpty() }
+                Log.d(TAG, "Loaded ${list.size} hosts for session $sessionId")
+                return list
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load session hosts: ${e.message}")
+        }
+        return emptyList()
+    }
+
+    fun deleteSessionFiles(context: Context, sessionId: Long, fileName: String) {
+        try {
+            // 1. Delete backup host file
+            val backupFile = File(context.filesDir, "session_hosts_$sessionId.txt")
+            if (backupFile.exists()) {
+                backupFile.delete()
+                Log.d(TAG, "Deleted session hosts backup file for $sessionId")
+            }
+
+            val cleanOutName = sanitizeFolderName(fileName.substringBeforeLast("."))
+                .ifBlank { "scan_$sessionId" }
+
+            // 2. Delete private downloads folder if exists
+            val base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            if (base != null) {
+                val appExtDir = File(base, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
+                if (appExtDir.exists()) {
+                    appExtDir.deleteRecursively()
+                    Log.d(TAG, "Deleted private session downloads folder: $appExtDir")
+                }
+            }
+
+            // 3. Delete public session downloads folder if exists
+            val pubDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (pubDownloads != null) {
+                val pubSessionDir = File(pubDownloads, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
+                if (pubSessionDir.exists()) {
+                    pubSessionDir.deleteRecursively()
+                    Log.d(TAG, "Deleted public session downloads folder: $pubSessionDir")
+                }
+            }
+            Log.d(TAG, "Successfully cleaned all session files for session: $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete session files: ${e.message}")
+        }
+    }
 }

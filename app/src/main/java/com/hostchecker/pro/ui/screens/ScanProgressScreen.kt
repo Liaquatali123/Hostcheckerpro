@@ -282,6 +282,19 @@ fun ScanProgressScreen(
                                     tint = Warning
                                 )
                             }
+                        } else {
+                            if (uiState.scanned < uiState.total) {
+                                IconButton(
+                                    onClick = { viewModel.resumeStoppedScan() },
+                                    modifier = Modifier.testTag("resume_stopped_scan_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Resume Scan",
+                                        tint = AccentCyan
+                                    )
+                                }
+                            }
                         }
 
                         // Search Toggle

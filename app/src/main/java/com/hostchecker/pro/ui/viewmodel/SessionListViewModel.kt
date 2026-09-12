@@ -21,9 +21,10 @@ class SessionListViewModel(
             initialValue = emptyList()
         )
 
-    fun deleteSession(sessionId: Long) {
+    fun deleteSession(context: android.content.Context, session: Session) {
         viewModelScope.launch {
-            sessionRepository.deleteSession(sessionId)
+            com.hostchecker.pro.util.AutoSaveManager.deleteSessionFiles(context, session.id, session.fileName)
+            sessionRepository.deleteSession(session.id)
         }
     }
 
