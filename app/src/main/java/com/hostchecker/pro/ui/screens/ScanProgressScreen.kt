@@ -4,6 +4,8 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,17 +15,28 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -32,12 +45,14 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -58,12 +73,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hostchecker.pro.domain.export.Exporter
 import com.hostchecker.pro.domain.model.ScanResult
+import com.hostchecker.pro.util.AutoSaveManager
 import com.hostchecker.pro.ui.components.ExportDestination
 import com.hostchecker.pro.ui.components.ExportSheet
 import com.hostchecker.pro.ui.components.ProgressFooter
@@ -74,6 +93,10 @@ import com.hostchecker.pro.ui.theme.AppBarTeal
 import com.hostchecker.pro.ui.theme.Background
 import com.hostchecker.pro.ui.theme.Divider
 import com.hostchecker.pro.ui.theme.Primary
+import com.hostchecker.pro.ui.theme.Status2xx
+import com.hostchecker.pro.ui.theme.Status3xx
+import com.hostchecker.pro.ui.theme.Status4xx
+import com.hostchecker.pro.ui.theme.Status5xx
 import com.hostchecker.pro.ui.theme.Surface
 import com.hostchecker.pro.ui.theme.SurfaceVariant
 import com.hostchecker.pro.ui.theme.TextPrimary
@@ -82,6 +105,7 @@ import com.hostchecker.pro.ui.theme.Warning
 import com.hostchecker.pro.ui.viewmodel.ScanUiState
 import com.hostchecker.pro.ui.viewmodel.ScanViewModel
 import com.hostchecker.pro.ui.viewmodel.SortField
+import java.io.File
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,13 +123,23 @@ fun ScanProgressScreen(
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val results by viewModel.filteredResults.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
 
     var showSearchBar by remember { mutableStateOf(false) }
     var showExportSheet by remember { mutableStateOf(false) }
     val exportSheetState = rememberModalBottomSheetState()
+    var showFilesSheet by remember { mutableStateOf(false) }
+    val filesSheetState = rememberModalBottomSheetState()
 
     LaunchedEffect(sessionId) {
         viewModel.loadSession(sessionId)
+    }
+
+    // Smoothly auto-scroll to top when a new live host appears so the user sees it slide into view
+    LaunchedEffect(results.firstOrNull()?.id) {
+        if (results.isNotEmpty() && listState.firstVisibleItemIndex <= 1) {
+            listState.animateScrollToItem(0)
+        }
     }
 
     Scaffold(
@@ -354,7 +388,7 @@ fun ScanProgressScreen(
                         FilterChip(
                             selected = !uiState.showFailedScans,
                             onClick = { viewModel.toggleShowFailedScans(!uiState.showFailedScans) },
-                            label = { Text("Live Only") },
+                            label = { Text("Live Only (${uiState.responded})") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = Primary,
                                 selectedLabelColor = TextPrimary,
@@ -395,8 +429,194 @@ fun ScanProgressScreen(
                 }
             }
 
+            // Real-time Auto-Save Output Banner
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceVariant),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .testTag("auto_save_banner")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = AccentCyan,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = uiState.autoSavePath.ifBlank { "Download/HostCheckerPro/${uiState.outName}" },
+                                    color = TextPrimary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${uiState.responded} live hosts saved (separated by code)",
+                                    color = AccentCyan,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // View all saved files list button
+                            IconButton(
+                                onClick = { showFilesSheet = true },
+                                modifier = Modifier.size(32.dp).testTag("view_all_files_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = "View Saved Files",
+                                    tint = TextPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            // Share live_hosts.txt button
+                            IconButton(
+                                onClick = {
+                                    val file = viewModel.getShareableAutoSaveFile(context)
+                                    if (file != null && file.exists()) {
+                                        try {
+                                            val intent = AutoSaveManager.createShareIntent(context, file)
+                                            context.startActivity(Intent.createChooser(intent, "Share live hosts"))
+                                        } catch (e: Exception) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Share failed: ${e.message}")
+                                            }
+                                        }
+                                    } else {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("No live hosts saved yet.")
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp).testTag("share_live_file_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Share live_hosts.txt",
+                                    tint = TextPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            // Open folder button
+                            IconButton(
+                                onClick = {
+                                    viewModel.openAutoSaveFolder(context)
+                                },
+                                modifier = Modifier.size(32.dp).testTag("open_folder_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FolderOpen,
+                                    contentDescription = "Open Downloads Folder",
+                                    tint = AccentCyan,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Real-time chips for individual response code files: 200.txt, 403.txt, etc.
+                    if (uiState.responded > 0 || uiState.codeCounts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // live_hosts.txt chip
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Primary.copy(alpha = 0.18f))
+                                    .border(1.dp, Primary.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        val file = viewModel.getShareableAutoSaveFile(context)
+                                        if (file != null && file.exists()) {
+                                            try {
+                                                val intent = AutoSaveManager.createViewFileIntent(context, file)
+                                                context.startActivity(Intent.createChooser(intent, "Open live_hosts.txt"))
+                                            } catch (e: Exception) {
+                                                scope.launch { snackbarHostState.showSnackbar("Open error: ${e.message}") }
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "📄 live_hosts.txt (${uiState.responded})",
+                                    fontSize = 11.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            // Per response code files: 200.txt, 403.txt, etc.
+                            for ((code, count) in uiState.codeCounts.toSortedMap()) {
+                                val codeColor = when (code) {
+                                    in 200..299 -> Status2xx
+                                    in 300..399 -> Status3xx
+                                    in 400..499 -> Status4xx
+                                    else -> Status5xx
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(codeColor.copy(alpha = 0.15f))
+                                        .border(1.dp, codeColor.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            val file = viewModel.getFileForCode(context, code)
+                                            if (file != null && file.exists()) {
+                                                try {
+                                                    val intent = AutoSaveManager.createViewFileIntent(context, file)
+                                                    context.startActivity(Intent.createChooser(intent, "Open $code.txt"))
+                                                } catch (e: Exception) {
+                                                    scope.launch { snackbarHostState.showSnackbar("Open error: ${e.message}") }
+                                                }
+                                            } else {
+                                                scope.launch { snackbarHostState.showSnackbar("File: $code.txt (${count} hosts)") }
+                                            }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "$code.txt ($count)",
+                                        fontSize = 11.sp,
+                                        color = codeColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // LazyColumn of ResultCards
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -404,26 +624,70 @@ fun ScanProgressScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(
-                    items = results,
-                    key = { it.id }
-                ) { result ->
-                    val isSelected = uiState.selectedIds.contains(result.id)
-                    ResultCard(
-                        result = result,
-                        isSelected = isSelected,
-                        isSelectionMode = uiState.isSelectionMode,
-                        onClick = {
-                            if (uiState.isSelectionMode) {
-                                viewModel.toggleSelection(result.id)
-                            } else {
-                                onOpenResultDetail(result.id)
+                if (results.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (uiState.isScanning) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(36.dp),
+                                        color = AccentCyan,
+                                        strokeWidth = 3.dp
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "Scanning hosts...\nLive responsive hosts will appear here at the top in real time",
+                                        color = TextSecondary,
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                } else if (uiState.searchQuery.isNotBlank()) {
+                                    Text(
+                                        text = "No results matching \"${uiState.searchQuery}\"",
+                                        color = TextSecondary,
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                } else {
+                                    Text(
+                                        text = "No live hosts found for this session.",
+                                        color = TextSecondary,
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
-                        },
-                        onLongClick = {
-                            onOpenResultDetail(result.id)
                         }
-                    )
+                    }
+                } else {
+                    items(
+                        items = results,
+                        key = { it.id }
+                    ) { result ->
+                        val isSelected = uiState.selectedIds.contains(result.id)
+                        Box(modifier = Modifier.animateItem()) {
+                            ResultCard(
+                                result = result,
+                                isSelected = isSelected,
+                                isSelectionMode = uiState.isSelectionMode,
+                                onClick = {
+                                    if (uiState.isSelectionMode) {
+                                        viewModel.toggleSelection(result.id)
+                                    } else {
+                                        onOpenResultDetail(result.id)
+                                    }
+                                },
+                                onLongClick = {
+                                    onOpenResultDetail(result.id)
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -452,6 +716,187 @@ fun ScanProgressScreen(
                 }
             }
         )
+    }
+
+    if (showFilesSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showFilesSheet = false },
+            sheetState = filesSheetState,
+            containerColor = SurfaceVariant
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-Saved Scan Files",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "📁 Download/HostCheckerPro/${uiState.outName}/",
+                            fontSize = 11.sp,
+                            color = AccentCyan,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = { showFilesSheet = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "Live hosts are automatically saved in real-time into separated response code files:",
+                    fontSize = 12.sp,
+                    color = TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                val savedFiles = viewModel.getAllSavedFiles(context)
+                if (savedFiles.isEmpty()) {
+                    Text(
+                        text = "No files created yet. Live hosts will be written here as responses arrive.",
+                        fontSize = 13.sp,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(savedFiles) { file ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Background),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        val isCodeFile = file.nameWithoutExtension.toIntOrNull() != null
+                                        val code = file.nameWithoutExtension.toIntOrNull() ?: 0
+                                        val iconTint = if (isCodeFile) {
+                                            when (code) {
+                                                in 200..299 -> Status2xx
+                                                in 300..399 -> Status3xx
+                                                in 400..499 -> Status4xx
+                                                else -> Status5xx
+                                            }
+                                        } else AccentCyan
+
+                                        Icon(
+                                            imageVector = Icons.Default.InsertDriveFile,
+                                            contentDescription = null,
+                                            tint = iconTint,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = file.name,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = TextPrimary
+                                            )
+                                            val lineCount = try { file.readLines().size } catch (e: Exception) { 0 }
+                                            Text(
+                                                text = "$lineCount hosts • ${file.length() / 1024 + 1} KB",
+                                                fontSize = 11.sp,
+                                                color = TextSecondary
+                                            )
+                                        }
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        // Open
+                                        IconButton(
+                                            onClick = {
+                                                try {
+                                                    val intent = AutoSaveManager.createViewFileIntent(context, file)
+                                                    context.startActivity(Intent.createChooser(intent, "Open ${file.name}"))
+                                                } catch (e: Exception) {
+                                                    scope.launch { snackbarHostState.showSnackbar("Viewer error: ${e.message}") }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.OpenInNew,
+                                                contentDescription = "Open",
+                                                tint = AccentCyan,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+
+                                        // Share
+                                        IconButton(
+                                            onClick = {
+                                                try {
+                                                    val intent = AutoSaveManager.createShareIntent(context, file)
+                                                    context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
+                                                } catch (e: Exception) {
+                                                    scope.launch { snackbarHostState.showSnackbar("Share error: ${e.message}") }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Share,
+                                                contentDescription = "Share",
+                                                tint = TextPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                androidx.compose.material3.Button(
+                    onClick = {
+                        showFilesSheet = false
+                        viewModel.openAutoSaveFolder(context)
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Primary),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextPrimary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Output Folder in Files App", color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
     }
 }
 

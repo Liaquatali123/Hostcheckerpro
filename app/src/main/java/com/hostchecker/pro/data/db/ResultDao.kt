@@ -9,19 +9,19 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ResultDao {
-    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY id DESC")
     fun getResultsForSession(sessionId: Long): Flow<List<ResultEntity>>
 
-    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId AND failed = 0 ORDER BY createdAt DESC")
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId AND failed = 0 ORDER BY id DESC")
     fun getLiveResultsForSession(sessionId: Long): Flow<List<ResultEntity>>
 
-    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY createdAt DESC LIMIT 1000")
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY id DESC LIMIT 2000")
     fun getRecentResultsForSession(sessionId: Long): Flow<List<ResultEntity>>
 
-    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId ORDER BY id DESC")
     suspend fun getAllResultsForSessionOnce(sessionId: Long): List<ResultEntity>
 
-    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId AND failed = 0 ORDER BY createdAt DESC")
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId AND failed = 0 ORDER BY id DESC")
     suspend fun getLiveResultsForSessionOnce(sessionId: Long): List<ResultEntity>
 
     @Query("SELECT * FROM scan_results WHERE id IN (:ids)")

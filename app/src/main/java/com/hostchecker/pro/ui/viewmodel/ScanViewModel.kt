@@ -14,6 +14,7 @@ import com.hostchecker.pro.domain.model.ScanConfig
 import com.hostchecker.pro.domain.model.ScanResult
 import com.hostchecker.pro.domain.model.Session
 import com.hostchecker.pro.domain.scanner.HostScanner
+import com.hostchecker.pro.util.AutoSaveManager
 import com.hostchecker.pro.util.NotificationHelper
 import java.io.File
 import kotlinx.coroutines.Job
@@ -42,14 +43,15 @@ data class ScanUiState(
     val elapsedSeconds: Long = 0L,
     val hostsPerSecond: Double = 0.0,
     val currentHost: String = "",
-    val showFailedScans: Boolean = true,
+    val showFailedScans: Boolean = false,
     val searchQuery: String = "",
     val sortField: SortField = SortField.TIME,
     val sortAscending: Boolean = false,
     val selectedIds: Set<Long> = emptySet(),
     val isSelectionMode: Boolean = false,
     val outName: String = "",
-    val autoSavePath: String = ""
+    val autoSavePath: String = "",
+    val codeCounts: Map<Int, Int> = emptyMap()
 )
 
 class ScanViewModel(
@@ -66,9 +68,9 @@ class ScanViewModel(
     private var currentSessionId: Long = 0
     private var allHostsForSession: List<String> = emptyList()
     private var timerJob: Job? = null
-    private var progressCollectorJob: Job? = null
+    private var resultsJob: Job? = null
 
-    // Raw results from Room for current session (capped at 1000 in memory for performance, full in DB)
+    // Raw results from Room for current session
     private val _rawResults = MutableStateFlow<List<ScanResult>>(emptyList())
 
     // Combined filtered & sorted results for UI
@@ -98,7 +100,7 @@ class ScanViewModel(
             SortField.MS -> if (state.sortAscending) filtered.sortedBy { it.ms } else filtered.sortedByDescending { it.ms }
             SortField.SERVER -> if (state.sortAscending) filtered.sortedBy { it.server } else filtered.sortedByDescending { it.server }
             SortField.FAVICON -> if (state.sortAscending) filtered.sortedBy { it.faviconHash } else filtered.sortedByDescending { it.faviconHash }
-            SortField.TIME -> if (state.sortAscending) filtered.sortedBy { it.createdAt } else filtered.sortedByDescending { it.createdAt }
+            SortField.TIME -> if (state.sortAscending) filtered.sortedBy { it.id } else filtered.sortedByDescending { it.id }
         }
         filtered
     }.stateIn(
@@ -149,6 +151,27 @@ class ScanViewModel(
         }
     }
 
+    private fun observeResults(sessionId: Long, showFailed: Boolean) {
+        if (sessionId <= 0L) return
+        resultsJob?.cancel()
+        resultsJob = viewModelScope.launch {
+            val resultsFlow = if (!showFailed) {
+                // Live Only: load all responsive hosts (failed = 0)
+                resultRepository.getLiveResultsForSession(sessionId)
+            } else {
+                // All: load recent results including failures
+                resultRepository.getRecentResultsForSession(sessionId)
+            }
+            resultsFlow.conflate().collect { list ->
+                _rawResults.value = list
+                val counts = list.filter { !it.failed && it.code > 0 }
+                    .groupingBy { it.code }
+                    .eachCount()
+                _uiState.value = _uiState.value.copy(codeCounts = counts)
+            }
+        }
+    }
+
     fun loadSession(sessionId: Long, hosts: List<String> = emptyList()) {
         currentSessionId = sessionId
         if (hosts.isNotEmpty()) {
@@ -157,21 +180,23 @@ class ScanViewModel(
 
         viewModelScope.launch {
             val session = sessionRepository.getSessionOnce(sessionId)
+            val folderName = if (session != null) {
+                AutoSaveManager.sanitizeFolderName(session.fileName.substringBeforeLast("."))
+                    .ifBlank { "scan_$sessionId" }
+            } else "scan_$sessionId"
+
             _uiState.value = _uiState.value.copy(
                 session = session,
                 scanned = session?.scanned ?: 0,
                 responded = session?.responded ?: 0,
                 total = session?.total ?: 0,
                 isScanning = hostScanner.isScanningNow(),
-                isPaused = hostScanner.isPausedNow()
+                isPaused = hostScanner.isPausedNow(),
+                outName = folderName,
+                autoSavePath = AutoSaveManager.getDisplayPath(folderName)
             )
 
-            // Observe recent results from Room
-            resultRepository.getRecentResultsForSession(sessionId)
-                .conflate()
-                .collect { list ->
-                    _rawResults.value = list
-                }
+            observeResults(sessionId, _uiState.value.showFailedScans)
         }
     }
 
@@ -191,9 +216,10 @@ class ScanViewModel(
             total = hosts.size,
             scanned = startIndex,
             outName = folderName,
-            autoSavePath = "HostCheckerPro/$folderName"
+            autoSavePath = AutoSaveManager.getDisplayPath(folderName)
         )
 
+        observeResults(sessionId, _uiState.value.showFailedScans)
         startTimer()
         hostScanner.startScan(
             sessionId = sessionId,
@@ -244,6 +270,26 @@ class ScanViewModel(
 
     fun toggleShowFailedScans(show: Boolean) {
         _uiState.value = _uiState.value.copy(showFailedScans = show)
+        if (currentSessionId > 0) {
+            observeResults(currentSessionId, show)
+        }
+    }
+
+    fun getShareableAutoSaveFile(context: Context): File? {
+        return AutoSaveManager.getShareableCleanFile(context, currentSessionId)
+    }
+
+    fun getFileForCode(context: Context, code: Int): File? {
+        return AutoSaveManager.getFileForCode(context, currentSessionId, code)
+    }
+
+    fun getAllSavedFiles(context: Context): List<File> {
+        return AutoSaveManager.getAllSavedFiles(context, currentSessionId)
+    }
+
+    fun openAutoSaveFolder(context: Context) {
+        val folder = _uiState.value.outName.ifBlank { "scan_$currentSessionId" }
+        AutoSaveManager.openOutputFolder(context, folder)
     }
 
     fun setSort(field: SortField) {

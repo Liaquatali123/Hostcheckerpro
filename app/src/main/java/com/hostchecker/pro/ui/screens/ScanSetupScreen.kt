@@ -20,9 +20,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -98,6 +100,8 @@ fun ScanSetupScreen(
 
     var sessionName by remember { mutableStateOf("") }
     var outNameText by remember { mutableStateOf("") }
+    var showConfirmFolderDialog by remember { mutableStateOf(false) }
+    var dialogFolderName by remember { mutableStateOf("") }
     var threadsText by remember { mutableStateOf("6") }
     var timeoutText by remember { mutableStateOf("10") }
     var filterText by remember { mutableStateOf("") }
@@ -272,30 +276,63 @@ fun ScanSetupScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Output Folder Name (outname)
-                OutlinedTextField(
-                    value = outNameText,
-                    onValueChange = { outNameText = it },
-                    label = { Text("Output Folder Name (outname)") },
-                    placeholder = { Text("e.g. live_targets") },
-                    supportingText = {
+                // Output Folder Card with Main App Folder HostCheckerPro info
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceVariant),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = AccentCyan,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Auto-Save Destination",
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary,
+                                fontSize = 14.sp
+                            )
+                        }
                         Text(
-                            text = "Auto-saves live hosts in: HostCheckerPro/${AutoSaveManager.sanitizeFolderName(outNameText).ifBlank { "scan" }}/",
-                            color = AccentCyan,
-                            fontSize = 12.sp
+                            text = "Main Folder: HostCheckerPro (in Downloads). Each scan gets its own separate folder so hosts never mix up. Results are auto-saved by response code (200.txt, 403.txt, etc.).",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            lineHeight = 16.sp
                         )
-                    },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("outname_input"),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Primary,
-                        unfocusedBorderColor = Divider,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
+                        OutlinedTextField(
+                            value = outNameText,
+                            onValueChange = { outNameText = it },
+                            label = { Text("Scan Subfolder Name") },
+                            placeholder = { Text("e.g. live_targets") },
+                            supportingText = {
+                                Text(
+                                    text = "📁 Download/HostCheckerPro/${AutoSaveManager.sanitizeFolderName(outNameText).ifBlank { "scan" }}/",
+                                    color = AccentCyan,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("outname_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Primary,
+                                unfocusedBorderColor = Divider,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            )
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -439,43 +476,138 @@ fun ScanSetupScreen(
 
                 Spacer(modifier = Modifier.height(28.dp))
 
+                val launchScanWithFolder: (String) -> Unit = { chosenFolder ->
+                    val threads = threadsText.toIntOrNull()?.coerceIn(1, 64) ?: 6
+                    val timeout = timeoutText.toIntOrNull()?.coerceIn(1, 60) ?: 10
+
+                    var targetHosts = loadedHosts
+                    if (filterText.isNotBlank()) {
+                        targetHosts = targetHosts.filter { it.contains(filterText.trim(), ignoreCase = true) }
+                    }
+
+                    val resolvedOutName = AutoSaveManager.sanitizeFolderName(chosenFolder).ifBlank { "scan" }
+
+                    val config = ScanConfig(
+                        threads = threads,
+                        timeoutSeconds = timeout,
+                        filterText = filterText,
+                        retryFailed = retryFailed,
+                        stealthMode = stealthMode,
+                        jitterEnabled = jitterEnabled,
+                        outName = resolvedOutName
+                    )
+
+                    scope.launch {
+                        val finalName = sessionName.ifBlank { "Scan: $fileName" }
+                        val newSession = Session(
+                            name = finalName,
+                            fileName = fileName,
+                            total = targetHosts.size,
+                            threads = threads,
+                            status = "RUNNING"
+                        )
+                        val sessionId = sessionRepository.createSession(newSession)
+                        onStartScan(sessionId, targetHosts, config)
+                    }
+                }
+
+                // Folder Name Confirmation Dialog before scan start
+                if (showConfirmFolderDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showConfirmFolderDialog = false },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = AccentCyan,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        },
+                        title = {
+                            Text(
+                                text = "Confirm Scan Folder",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = TextPrimary
+                            )
+                        },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    text = "Each scan saves inside its own folder in HostCheckerPro so hosts from different scans never mix up.",
+                                    fontSize = 13.sp,
+                                    color = TextSecondary
+                                )
+                                OutlinedTextField(
+                                    value = dialogFolderName,
+                                    onValueChange = { dialogFolderName = it },
+                                    label = { Text("Folder Name for this Scan") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("dialog_folder_name_input"),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Primary,
+                                        unfocusedBorderColor = Divider,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    )
+                                )
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Background),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "📁 Download/HostCheckerPro/${AutoSaveManager.sanitizeFolderName(dialogFolderName).ifBlank { "scan" }}/",
+                                            fontSize = 11.sp,
+                                            color = AccentCyan,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "↳ Real-time auto-saving:\n  • live_hosts.txt (all live)\n  • 200.txt, 403.txt, etc. (by response code)\n  • live_details.csv",
+                                            fontSize = 11.sp,
+                                            color = TextSecondary,
+                                            lineHeight = 16.sp
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showConfirmFolderDialog = false
+                                    outNameText = dialogFolderName
+                                    launchScanWithFolder(dialogFolderName)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                                modifier = Modifier.testTag("confirm_start_scan_button")
+                            ) {
+                                Text("Start Scan & Save", fontWeight = FontWeight.Bold, color = TextPrimary)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showConfirmFolderDialog = false }) {
+                                Text("Cancel", color = TextSecondary)
+                            }
+                        },
+                        containerColor = SurfaceVariant
+                    )
+                }
+
                 // BIG "START SCAN" button
                 Button(
                     onClick = {
-                        val threads = threadsText.toIntOrNull()?.coerceIn(1, 64) ?: 6
-                        val timeout = timeoutText.toIntOrNull()?.coerceIn(1, 60) ?: 10
-
-                        var targetHosts = loadedHosts
-                        if (filterText.isNotBlank()) {
-                            targetHosts = targetHosts.filter { it.contains(filterText.trim(), ignoreCase = true) }
-                        }
-
-                        val resolvedOutName = outNameText.trim().ifBlank {
+                        dialogFolderName = outNameText.trim().ifBlank {
                             sessionName.trim().ifBlank { fileName.substringBeforeLast(".") }.ifBlank { "scan" }
                         }
-
-                        val config = ScanConfig(
-                            threads = threads,
-                            timeoutSeconds = timeout,
-                            filterText = filterText,
-                            retryFailed = retryFailed,
-                            stealthMode = stealthMode,
-                            jitterEnabled = jitterEnabled,
-                            outName = resolvedOutName
-                        )
-
-                        scope.launch {
-                            val finalName = sessionName.ifBlank { "Scan: $fileName" }
-                            val newSession = Session(
-                                name = finalName,
-                                fileName = fileName,
-                                total = targetHosts.size,
-                                threads = threads,
-                                status = "RUNNING"
-                            )
-                            val sessionId = sessionRepository.createSession(newSession)
-                            onStartScan(sessionId, targetHosts, config)
-                        }
+                        showConfirmFolderDialog = true
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Primary),
                     shape = RoundedCornerShape(12.dp),
