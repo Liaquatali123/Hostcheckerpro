@@ -77,23 +77,20 @@ object AutoSaveManager {
             try {
                 val base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 appExtDir = File(base, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
-                if (!appExtDir.exists()) {
-                    appExtDir.mkdirs()
+                if (appExtDir.exists()) {
+                    appExtDir.deleteRecursively()
                 }
+                appExtDir.mkdirs()
                 if (appExtDir.exists()) {
                     val hostFile = File(appExtDir, "live_hosts.txt")
-                    if (!hostFile.exists()) {
-                        hostFile.createNewFile()
-                    }
+                    hostFile.createNewFile()
                     cleanFiles.add(hostFile)
 
                     val csvFile = File(appExtDir, "live_details.csv")
-                    if (!csvFile.exists() || csvFile.length() == 0L) {
-                        csvFile.writeText(
-                            "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n",
-                            Charsets.UTF_8
-                        )
-                    }
+                    csvFile.writeText(
+                        "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n",
+                        Charsets.UTF_8
+                    )
                     detailsFiles.add(csvFile)
                 }
             } catch (e: Exception) {
@@ -102,37 +99,37 @@ object AutoSaveManager {
         }
 
         // 2. Direct public Downloads folder attempt (accessible on legacy Android or if direct I/O permitted)
+        // ONLY use direct public directory on Android 9 and below to prevent duplicate files on Android 10+
         var pubSessionDir: File? = null
-        try {
-            val pubDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (pubDownloads != null) {
-                pubSessionDir = File(pubDownloads, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
-                if (!pubSessionDir.exists()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                val pubDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (pubDownloads != null) {
+                    pubSessionDir = File(pubDownloads, "$MAIN_STORAGE_APP_FOLDER/$cleanOutName")
+                    if (pubSessionDir.exists()) {
+                        pubSessionDir.deleteRecursively()
+                    }
                     pubSessionDir.mkdirs()
-                }
-                if (pubSessionDir.exists() && pubSessionDir.canWrite()) {
-                    val pubHostFile = File(pubSessionDir, "live_hosts.txt")
-                    if (!pubHostFile.exists()) {
+                    if (pubSessionDir.exists() && pubSessionDir.canWrite()) {
+                        val pubHostFile = File(pubSessionDir, "live_hosts.txt")
                         pubHostFile.createNewFile()
-                    }
-                    if (!cleanFiles.contains(pubHostFile)) {
-                        cleanFiles.add(pubHostFile)
-                    }
+                        if (!cleanFiles.contains(pubHostFile)) {
+                            cleanFiles.add(pubHostFile)
+                        }
 
-                    val pubCsvFile = File(pubSessionDir, "live_details.csv")
-                    if (!pubCsvFile.exists() || pubCsvFile.length() == 0L) {
+                        val pubCsvFile = File(pubSessionDir, "live_details.csv")
                         pubCsvFile.writeText(
                             "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n",
                             Charsets.UTF_8
                         )
-                    }
-                    if (!detailsFiles.contains(pubCsvFile)) {
-                        detailsFiles.add(pubCsvFile)
+                        if (!detailsFiles.contains(pubCsvFile)) {
+                            detailsFiles.add(pubCsvFile)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Public Downloads direct write not available: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Public Downloads direct write not available: ${e.message}")
         }
 
         // 3. Android 10+ (API 29+) MediaStore Downloads insertion so files appear directly in Files / Downloads
@@ -154,7 +151,18 @@ object AutoSaveManager {
                     relativePath = relativePath
                 )
 
-                // Initialize CSV header if newly created
+                // Truncate existing Host file to start fresh
+                if (mediaHostUri != null) {
+                    try {
+                        context.contentResolver.openOutputStream(mediaHostUri, "w")?.use { out ->
+                            out.flush()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed truncating MediaStore Host file: ${e.message}")
+                    }
+                }
+
+                // Initialize CSV header if newly created or truncated
                 if (mediaCsvUri != null) {
                     try {
                         context.contentResolver.openOutputStream(mediaCsvUri, "w")?.use { out ->
@@ -210,8 +218,13 @@ object AutoSaveManager {
         val session = activeSessions[sessionId] ?: return
 
         synchronized(session.lock) {
-            val hostLine = "${scanResult.host}\n"
             val code = if (scanResult.originalCode > 0) scanResult.originalCode else scanResult.code
+            val ipVal = if (scanResult.ip.isBlank()) "—" else scanResult.ip
+            val serverVal = if (scanResult.server.isBlank()) "—" else scanResult.server
+            val displayCode = if (scanResult.failed) "Failed" else "$code"
+            val schemeVal = if (scanResult.scheme.isBlank()) "HTTPS" else scanResult.scheme
+            val msVal = if (scanResult.ms > 0) "${scanResult.ms}ms" else "—"
+            val hostLine = "${scanResult.host}  |  IP: $ipVal  |  Server: $serverVal  |  Code: $displayCode  |  Scheme: $schemeVal  |  Time: $msVal\n"
             val csvLine = buildString {
                 append(escapeCsv(scanResult.host)).append(",")
                 append(escapeCsv(scanResult.ip)).append(",")
@@ -299,6 +312,14 @@ object AutoSaveManager {
                             )
                             if (uri != null) {
                                 session.mediaStoreCodeUris[code] = uri
+                                // Truncate to start fresh
+                                try {
+                                    context.contentResolver.openOutputStream(uri, "w")?.use { out ->
+                                        out.flush()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed truncating MediaStore $codeFileName: ${e.message}")
+                                }
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error creating MediaStore code file: ${e.message}")
@@ -523,10 +544,13 @@ object AutoSaveManager {
         val resolver = context.contentResolver
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
 
+        // Ensure relative path ends with slash for exact matching in MediaStore
+        val normalizedRelativePath = if (relativePath.endsWith("/")) relativePath else "$relativePath/"
+
         // Query if file already exists
         val projection = arrayOf(MediaStore.MediaColumns._ID)
-        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
-        val selectionArgs = arrayOf(fileName, "%$relativePath%")
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
+        val selectionArgs = arrayOf(fileName, normalizedRelativePath)
 
         try {
             resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
@@ -543,7 +567,7 @@ object AutoSaveManager {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "$relativePath/")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, normalizedRelativePath)
             put(MediaStore.MediaColumns.IS_PENDING, 0)
         }
 
