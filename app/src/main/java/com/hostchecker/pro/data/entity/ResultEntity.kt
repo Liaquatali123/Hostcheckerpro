@@ -10,7 +10,8 @@ import org.json.JSONObject
     tableName = "scan_results",
     indices = [
         Index(value = ["sessionId"]),
-        Index(value = ["sessionId", "createdAt"])
+        Index(value = ["sessionId", "createdAt"]),
+        Index(value = ["sessionId", "host"])
     ]
 )
 data class ResultEntity(
@@ -18,6 +19,14 @@ data class ResultEntity(
     val id: Long = 0,
     val sessionId: Long,
     val host: String,
+    val scheme: String = "HTTPS",
+    val requestedUrl: String = "",
+    val finalUrl: String = "",
+    val originalCode: Int = 0,
+    val finalCode: Int = 0,
+    val redirectCount: Int = 0,
+    val redirectChain: String = "",
+    val httpMethod: String = "GET",
     val ip: String,
     val asn: String,
     val org: String,
@@ -41,6 +50,12 @@ data class ResultEntity(
             san.split(";").map { it.trim() }.filter { it.isNotEmpty() }
         }
 
+        val chainList = if (redirectChain.isBlank()) {
+            emptyList()
+        } else {
+            redirectChain.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        }
+
         val headersMap = mutableMapOf<String, String>()
         if (headersJson.isNotBlank()) {
             runCatching {
@@ -53,15 +68,25 @@ data class ResultEntity(
             }
         }
 
+        val primaryCode = if (originalCode > 0) originalCode else code
+
         return ScanResult(
             id = id,
             sessionId = sessionId,
             host = host,
+            scheme = scheme.ifBlank { "HTTPS" },
+            requestedUrl = requestedUrl,
+            finalUrl = finalUrl,
+            httpMethod = httpMethod.ifBlank { "GET" },
+            originalCode = if (originalCode > 0) originalCode else primaryCode,
+            finalCode = if (finalCode > 0) finalCode else primaryCode,
+            redirectCount = redirectCount,
+            redirectChain = chainList,
             ip = ip,
             asn = asn,
             org = org,
             server = server,
-            code = code,
+            code = primaryCode,
             ms = ms,
             title = title,
             faviconHash = faviconHash,
@@ -83,15 +108,25 @@ data class ResultEntity(
                 json.toString()
             } else ""
 
+            val primaryCode = if (result.originalCode > 0) result.originalCode else result.code
+
             return ResultEntity(
                 id = result.id,
                 sessionId = result.sessionId,
                 host = result.host,
+                scheme = result.scheme.ifBlank { "HTTPS" },
+                requestedUrl = result.requestedUrl,
+                finalUrl = result.finalUrl,
+                originalCode = if (result.originalCode > 0) result.originalCode else primaryCode,
+                finalCode = if (result.finalCode > 0) result.finalCode else primaryCode,
+                redirectCount = result.redirectCount,
+                redirectChain = result.redirectChain.joinToString("\n"),
+                httpMethod = result.httpMethod.ifBlank { "GET" },
                 ip = result.ip,
                 asn = result.asn,
                 org = result.org,
                 server = result.server,
-                code = result.code,
+                code = primaryCode,
                 ms = result.ms,
                 title = result.title,
                 faviconHash = result.faviconHash,
@@ -106,3 +141,4 @@ data class ResultEntity(
         }
     }
 }
+

@@ -185,4 +185,63 @@ class HostCheckerTests {
         assertTrue(json.contains("\"host\": \"auth.example.com\""))
         assertTrue(json.contains("\"code\": 200"))
     }
+
+    @Test
+    fun testScannerAccuracyFieldsAndRedirectChains() {
+        val redirectResult = ScanResult(
+            id = 10,
+            sessionId = 1,
+            host = "redirect.example.com",
+            scheme = "HTTPS",
+            requestedUrl = "https://redirect.example.com",
+            finalUrl = "https://redirect.example.com/login",
+            httpMethod = "GET",
+            originalCode = 302,
+            finalCode = 200,
+            redirectCount = 1,
+            redirectChain = listOf("https://redirect.example.com [302]", "https://redirect.example.com/login [200]"),
+            ip = "1.1.1.1",
+            code = 302,
+            ms = 120,
+            failed = false
+        )
+
+        assertEquals("HTTPS", redirectResult.scheme)
+        assertEquals(302, redirectResult.originalCode)
+        assertEquals(200, redirectResult.finalCode)
+        assertEquals(1, redirectResult.redirectCount)
+        assertEquals(2, redirectResult.redirectChain.size)
+        assertFalse(redirectResult.failed)
+
+        // 3xx, 4xx, 5xx are valid HTTP responses, not failures
+        val notFoundResult = ScanResult(
+            id = 11,
+            sessionId = 1,
+            host = "missing.example.com",
+            scheme = "HTTPS",
+            requestedUrl = "https://missing.example.com",
+            finalUrl = "https://missing.example.com",
+            originalCode = 404,
+            finalCode = 404,
+            code = 404,
+            failed = false
+        )
+        assertFalse("HTTP 404 must not be marked as failed", notFoundResult.failed)
+        assertEquals(404, notFoundResult.code)
+
+        val goneResult = ScanResult(
+            id = 12,
+            sessionId = 1,
+            host = "gone.example.com",
+            scheme = "HTTPS",
+            requestedUrl = "https://gone.example.com",
+            finalUrl = "https://gone.example.com",
+            originalCode = 410,
+            finalCode = 410,
+            code = 410,
+            failed = false
+        )
+        assertFalse("HTTP 410 must not be marked as failed", goneResult.failed)
+        assertEquals(410, goneResult.code)
+    }
 }

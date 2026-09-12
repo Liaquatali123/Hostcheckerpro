@@ -43,8 +43,23 @@ class ResultRepository(
         resultDao.getResultByIdOnce(id)?.toDomain()
     }
 
+    suspend fun getResultForHost(sessionId: Long, host: String): ScanResult? = withContext(Dispatchers.IO) {
+        resultDao.getResultForHost(sessionId, host)?.toDomain()
+    }
+
     suspend fun insertResult(result: ScanResult): Long = withContext(Dispatchers.IO) {
-        resultDao.insertResult(ResultEntity.fromDomain(result))
+        val existing = resultDao.getResultForHost(result.sessionId, result.host)
+        if (existing != null) {
+            // Never overwrite a valid HTTP response with a network failure
+            if (!existing.failed && existing.code in 100..599 && result.failed) {
+                return@withContext existing.id
+            }
+            val entity = ResultEntity.fromDomain(result).copy(id = existing.id)
+            resultDao.insertResult(entity)
+            existing.id
+        } else {
+            resultDao.insertResult(ResultEntity.fromDomain(result))
+        }
     }
 
     suspend fun insertResults(results: List<ScanResult>) = withContext(Dispatchers.IO) {

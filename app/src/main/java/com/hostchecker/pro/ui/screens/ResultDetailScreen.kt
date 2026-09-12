@@ -88,6 +88,7 @@ fun ResultDetailScreen(
     val context = LocalContext.current
     val result by viewModel.result.collectAsStateWithLifecycle()
     val isRescanning by viewModel.isRescanning.collectAsStateWithLifecycle()
+    var requestDetailsExpanded by remember { mutableStateOf(true) }
     var headersExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(resultId) {
@@ -194,6 +195,67 @@ fun ResultDetailScreen(
                         DetailRow(label = "Server", value = item.server.ifBlank { "—" })
                         DetailRow(label = "Page Title", value = item.title.ifBlank { "—" })
                         DetailRow(label = "Favicon MMH3", value = faviconDisplay)
+                    }
+                }
+
+                // Collapsible Request Details Section (for Debugging and Accuracy Verification)
+                Spacer(modifier = Modifier.height(16.dp))
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceVariant),
+                    border = BorderStroke(1.dp, DividerColor),
+                    modifier = Modifier.fillMaxWidth().testTag("request_details_card")
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { requestDetailsExpanded = !requestDetailsExpanded },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Request Details",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Icon(
+                                imageVector = if (requestDetailsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = if (requestDetailsExpanded) "Collapse" else "Expand",
+                                tint = TextSecondary
+                            )
+                        }
+
+                        if (requestDetailsExpanded) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            val reqUrl = item.requestedUrl.ifBlank { "${item.scheme.lowercase()}://${item.host}" }
+                            val finUrl = item.finalUrl.ifBlank { reqUrl }
+                            val origStatus = if (item.originalCode > 0) "${item.originalCode}" else if (!item.failed) "${item.code}" else "—"
+                            val finStatus = if (item.finalCode > 0) "${item.finalCode}" else if (!item.failed) "${item.code}" else "—"
+                            val chainDisplay = if (item.redirectChain.isNotEmpty()) {
+                                item.redirectChain.joinToString("\n↳ ")
+                            } else if (item.redirectCount > 0) {
+                                "${item.redirectCount} redirect(s)"
+                            } else {
+                                "None (direct response)"
+                            }
+
+                            DetailRow(label = "Requested URL", value = reqUrl)
+                            DetailRow(label = "Protocol (Scheme)", value = item.scheme)
+                            DetailRow(label = "HTTP Method", value = item.httpMethod)
+                            DetailRow(label = "Original Status", value = origStatus)
+                            DetailRow(label = "Final Status", value = finStatus)
+                            DetailRow(label = "Final URL", value = finUrl)
+                            DetailRow(label = "Redirect Chain", value = chainDisplay)
+                            DetailRow(label = "Resolved IP", value = item.ip.ifBlank { "—" })
+                            DetailRow(label = "Response Time", value = "${item.ms} ms")
+                            DetailRow(label = "Server Header", value = item.server.ifBlank { "—" })
+                            DetailRow(
+                                label = "Error",
+                                value = if (item.failed) item.errorMessage.ifBlank { "Network failure" } else "None"
+                            )
+                        }
                     }
                 }
 

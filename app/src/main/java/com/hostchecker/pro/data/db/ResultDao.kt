@@ -33,6 +33,9 @@ interface ResultDao {
     @Query("SELECT * FROM scan_results WHERE id = :id LIMIT 1")
     suspend fun getResultByIdOnce(id: Long): ResultEntity?
 
+    @Query("SELECT * FROM scan_results WHERE sessionId = :sessionId AND host = :host LIMIT 1")
+    suspend fun getResultForHost(sessionId: Long, host: String): ResultEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertResult(result: ResultEntity): Long
 

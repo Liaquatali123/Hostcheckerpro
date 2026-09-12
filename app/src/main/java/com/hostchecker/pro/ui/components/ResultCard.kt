@@ -63,12 +63,15 @@ fun ResultCard(
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val displayCode = if (result.originalCode > 0) result.originalCode else result.code
+    val isRedirected = !result.failed && result.originalCode > 0 && result.finalCode > 0 && result.originalCode != result.finalCode
+
     val statusColor = when {
         result.failed -> StatusFailed
-        result.code in 200..299 -> Status2xx
-        result.code in 300..399 -> Status3xx
-        result.code in 400..499 -> Status4xx
-        result.code >= 500 -> Status5xx
+        displayCode in 200..299 -> Status2xx
+        displayCode in 300..399 -> Status3xx
+        displayCode in 400..499 -> Status4xx
+        displayCode >= 500 -> Status5xx
         else -> StatusFailed
     }
 
@@ -76,6 +79,14 @@ fun ResultCard(
         isSelected -> BorderStroke(2.dp, Primary)
         !result.failed -> BorderStroke(1.dp, statusColor.copy(alpha = 0.5f))
         else -> BorderStroke(1.dp, Divider)
+    }
+
+    val badgeText = when {
+        result.failed -> "FAIL"
+        isRedirected -> "${result.originalCode} → ${result.finalCode}"
+        result.originalCode > 0 -> "${result.originalCode}"
+        result.code > 0 -> "${result.code}"
+        else -> "FAIL"
     }
 
     Card(
@@ -137,7 +148,7 @@ fun ResultCard(
                         border = BorderStroke(1.dp, statusColor.copy(alpha = 0.8f))
                     ) {
                         Text(
-                            text = if (result.failed) "FAIL" else "${result.code}",
+                            text = badgeText,
                             color = statusColor,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -149,7 +160,30 @@ fun ResultCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Sub-line 1: Server • IP • ASN (maxLines = 2, no truncation)
+                // Line 1: Protocol • Code (or Redirect) • Response Time • Title
+                val schemeText = if (result.scheme.isNotBlank()) result.scheme else "HTTPS"
+                val protocolAndCode = when {
+                    result.failed -> "$schemeText • Failed"
+                    isRedirected -> "$schemeText • ${result.originalCode} → ${result.finalCode}"
+                    result.originalCode > 0 -> "$schemeText • ${result.originalCode}"
+                    else -> "$schemeText • ${result.code}"
+                }
+                val msText = if (result.ms > 0) "${result.ms}ms" else ""
+                val titleText = if (result.title.isNotBlank()) "Title: ${result.title}" else if (result.failed && result.errorMessage.isNotBlank()) "Err: ${result.errorMessage}" else ""
+
+                val line1Parts = listOf(protocolAndCode, msText, titleText).filter { it.isNotBlank() }
+                Text(
+                    text = line1Parts.joinToString("  •  "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = true
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // Line 2: Server • IP • ASN
                 val serverText = if (result.server.isNotBlank()) result.server else "—"
                 val ipText = if (result.ip.isNotBlank()) result.ip else "—"
                 val rawAsn = if (result.asn.isNotBlank()) result.asn else result.org
@@ -159,23 +193,6 @@ fun ResultCard(
                     text = "Server: $serverText  •  IP: $ipText  •  ASN: $asnText",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    softWrap = true
-                )
-
-                Spacer(modifier = Modifier.height(2.dp))
-
-                // Sub-line 2: Code • Response Time • Title (maxLines = 2, no truncation)
-                val codeText = if (result.failed) "Failed" else "Code: ${result.code}"
-                val msText = if (result.ms > 0) "${result.ms}ms" else ""
-                val titleText = if (result.title.isNotBlank()) "Title: ${result.title}" else if (result.failed && result.errorMessage.isNotBlank()) "Err: ${result.errorMessage}" else ""
-
-                val line2Parts = listOf(codeText, msText, titleText).filter { it.isNotBlank() }
-                Text(
-                    text = line2Parts.joinToString("  •  "),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextPrimary,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     softWrap = true

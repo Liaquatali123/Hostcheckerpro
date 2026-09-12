@@ -34,20 +34,18 @@ class DetailViewModel(
         val current = _result.value ?: return
         viewModelScope.launch {
             _isRescanning.value = true
-            // Run immediate single scan on host
-            hostScanner.startScan(
-                sessionId = current.sessionId,
-                hosts = listOf(current.host),
-                config = ScanConfig(threads = 1, timeoutSeconds = 10),
-                startIndex = 0
-            )
-            // Reload after brief delay
-            kotlinx.coroutines.delay(2000)
-            val updated = resultRepository.getResultByIdOnce(current.id)
-            if (updated != null) {
+            try {
+                val freshResult = hostScanner.rescanHostDirect(
+                    sessionId = current.sessionId,
+                    host = current.host
+                )
+                val updated = resultRepository.getResultForHost(current.sessionId, current.host) ?: freshResult
                 _result.value = updated
+            } catch (e: Exception) {
+                // Ignore or log error
+            } finally {
+                _isRescanning.value = false
             }
-            _isRescanning.value = false
         }
     }
 

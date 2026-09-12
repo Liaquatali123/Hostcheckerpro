@@ -90,7 +90,7 @@ object AutoSaveManager {
                     val csvFile = File(appExtDir, "live_details.csv")
                     if (!csvFile.exists() || csvFile.length() == 0L) {
                         csvFile.writeText(
-                            "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted\n",
+                            "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n",
                             Charsets.UTF_8
                         )
                     }
@@ -122,7 +122,7 @@ object AutoSaveManager {
                     val pubCsvFile = File(pubSessionDir, "live_details.csv")
                     if (!pubCsvFile.exists() || pubCsvFile.length() == 0L) {
                         pubCsvFile.writeText(
-                            "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted\n",
+                            "Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n",
                             Charsets.UTF_8
                         )
                     }
@@ -158,7 +158,7 @@ object AutoSaveManager {
                 if (mediaCsvUri != null) {
                     try {
                         context.contentResolver.openOutputStream(mediaCsvUri, "w")?.use { out ->
-                            out.write("Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted\n".toByteArray(Charsets.UTF_8))
+                            out.write("Host,IP,StatusCode,ResponseTimeMs,Server,Title,FaviconHash,ASN,Org,CloudflareFronted,Scheme,OriginalCode,FinalCode\n".toByteArray(Charsets.UTF_8))
                             out.flush()
                         }
                     } catch (e: Exception) {
@@ -211,18 +211,21 @@ object AutoSaveManager {
 
         synchronized(session.lock) {
             val hostLine = "${scanResult.host}\n"
-            val code = scanResult.code
+            val code = if (scanResult.originalCode > 0) scanResult.originalCode else scanResult.code
             val csvLine = buildString {
                 append(escapeCsv(scanResult.host)).append(",")
                 append(escapeCsv(scanResult.ip)).append(",")
-                append(scanResult.code).append(",")
+                append(code).append(",")
                 append(scanResult.ms).append(",")
                 append(escapeCsv(scanResult.server)).append(",")
                 append(escapeCsv(scanResult.title)).append(",")
                 append(escapeCsv(scanResult.faviconHash)).append(",")
                 append(escapeCsv(scanResult.asn)).append(",")
                 append(escapeCsv(scanResult.org)).append(",")
-                append(scanResult.cloudflareFronted).append("\n")
+                append(scanResult.cloudflareFronted).append(",")
+                append(escapeCsv(scanResult.scheme)).append(",")
+                append(if (scanResult.originalCode > 0) scanResult.originalCode else code).append(",")
+                append(if (scanResult.finalCode > 0) scanResult.finalCode else code).append("\n")
             }
 
             // --- 1. Write to all-live hosts files (live_hosts.txt) ---

@@ -9,5 +9,7 @@ data class ScanConfig(
     val stealthMode: Boolean = false,
     val jitterEnabled: Boolean = false,
     val showFailed: Boolean = true,
-    val outName: String = ""
+    val outName: String = "",
+    val followRedirects: Boolean = true,
+    val httpMethod: String = "GET"
 )
